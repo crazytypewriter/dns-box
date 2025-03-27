@@ -8,8 +8,8 @@
   },
   "dns": {
     "nameservers": [
-      "1.1.1.1:53",
-      "8.8.8.8:53"
+      "8.8.8.8:53",
+      "1.1.1.1:53"
     ],
     "timeout": 5
   },
@@ -19,6 +19,8 @@
   },
   "rules": {
     "domain": [
+      "rutor.is",
+      "rutracker.org"
     ],
     "domain_suffix": [
       ".googlevideo.com",
@@ -32,10 +34,8 @@
       ".doubleclick.net",
       ".ggpht.com",
       ".www.youtube.com",
-      ".youtubekids.com",
-      ".rutor.is",
-      ".rutracker.org"
+      ".youtubekids.com"
     ]
   },
   "Path": "/data/dns-box/config.json"
-}
+}  

@@ -91,6 +91,10 @@ func run(ctx context.Context) error {
 	l.Infof("Shutting down DNS server...")
 	dnsServer.Stop(shutdownCtx)
 	apiServer.Stop(shutdownCtx)
+	err = cfg.SaveWithUpdatedRules()
+	if err != nil {
+		l.Errorf("Failed to save config: %v", err)
+	}
 
 	return nil
 }

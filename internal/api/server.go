@@ -4,10 +4,8 @@ import (
 	"context"
 	"dns-box/internal/cache"
 	"dns-box/internal/config"
-	"encoding/json"
 	log "github.com/sirupsen/logrus"
 	"net/http"
-	"os"
 	"time"
 )
 
@@ -47,26 +45,7 @@ func (s *Server) Stop(ctx context.Context) {
 	shutdownCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
-	s.log.Println("Shutting down api server, saving config...")
-	if err := s.saveConfig(); err != nil {
-		s.log.Printf("Error saving config: %s", err)
-	} else {
-		s.log.Println("Config saved.")
-	}
-
 	if err := s.httpServer.Shutdown(shutdownCtx); err != nil {
 		panic(err)
 	}
-}
-
-func (s *Server) saveConfig() error {
-	file, err := os.Create(s.cfg.Path)
-	if err != nil {
-		return err
-	}
-	defer file.Close()
-
-	encoder := json.NewEncoder(file)
-	encoder.SetIndent("", "  ")
-	return encoder.Encode(&s.cfg)
 }
