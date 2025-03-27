@@ -1,0 +1,31 @@
+{
+  "server": {
+    "address": [":53", "[::]:53"],
+    "log": "debug"
+  },
+  "dns": {
+    "nameservers": ["1.1.1.1:53", "8.8.8.8:53"],
+    "timeout": 5
+  },
+  "ipset": {
+    "ipv4name": "vpn_domains",
+    "ipv6name": "vpn_domains6"
+  },
+  "rules": [
+    {
+      "domain": [
+        "googlevideo.com",
+        "youtube.com",
+        "ytimg.com",
+        "youtube-nocookie.com",
+        "googleapis.com",
+        "doubleclick.net"
+      ],
+      "domain_suffix": [
+        "youtubei.googleapis.com",
+        "ytimg.l.google.com",
+        "youtube.googleapis.com"
+      ]
+    }
+    ]
+}
