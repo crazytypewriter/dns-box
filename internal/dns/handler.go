@@ -50,16 +50,18 @@ func (h *Handler) ServeDNS(w dns.ResponseWriter, r *dns.Msg) {
 
 func (h *Handler) shouldProcess(domain string) bool {
 	domainWithoutDot := strings.TrimSuffix(domain, ".")
-	h.log.Debugf("Should process domain: %s", domainWithoutDot)
+	h.log.Tracef("Should process domain: %s", domainWithoutDot)
 
 	if h.domainCache.Contains(domainWithoutDot) {
+		h.log.Debugf("Domain found in config, process: %s", domainWithoutDot)
 		return true
 	}
 
 	parts := strings.Split(domainWithoutDot, ".")
-	if len(parts) > 2 {
-		suffix := "." + strings.Join(parts[len(parts)-2:], ".")
+	for i := 0; i < len(parts)-2; i++ {
+		suffix := "." + strings.Join(parts[i:], ".")
 		if h.domainCache.ContainsSuffix(suffix) {
+			h.log.Debugf("Domain found in suffix config, process: %s", domainWithoutDot)
 			return true
 		}
 	}
@@ -73,10 +75,12 @@ func (h *Handler) processAnswers(answers []dns.RR) {
 		case *dns.A:
 			if h.config.IPSet.IPv4Name != "" {
 				h.ipSet.AddElement(h.config.IPSet.IPv4Name, r.A.String(), r.Hdr.Ttl)
+				h.log.Debugf("Added IPv4 address to ipset: %s", h.config.IPSet.IPv4Name)
 			}
 		case *dns.AAAA:
 			if h.config.IPSet.IPv6Name != "" {
 				h.ipSet.AddElement(h.config.IPSet.IPv6Name, r.AAAA.String(), r.Hdr.Ttl)
+				h.log.Debugf("Added IPv6 address to ipset: %s", h.config.IPSet.IPv6Name)
 			}
 		}
 	}
@@ -84,7 +88,7 @@ func (h *Handler) processAnswers(answers []dns.RR) {
 
 func (h *Handler) resolver(domain string, qtype uint16) []dns.RR {
 	if cached := h.getFromCache(domain, qtype); len(cached) > 0 {
-		h.log.Debugf("Cache hit for %s (type %d)", domain, qtype)
+		h.log.Tracef("Cache hit for %s (type %d)", domain, qtype)
 		return cached
 	}
 
@@ -92,7 +96,6 @@ func (h *Handler) resolver(domain string, qtype uint16) []dns.RR {
 	m.SetQuestion(dns.Fqdn(domain), qtype)
 	m.RecursionDesired = true
 
-	// 3. Настраиваем клиент с таймаутом из конфига
 	client := &dns.Client{
 		Timeout: time.Duration(h.config.DNS.Timeout) * time.Second,
 	}
@@ -115,28 +118,28 @@ func (h *Handler) resolver(domain string, qtype uint16) []dns.RR {
 
 	if len(response.Answer) > 0 {
 		h.cacheResponse(domain, qtype, response.Answer)
-		h.log.Debugf("Cache set for %s (type %d)", domain, qtype)
+		h.log.Tracef("Cache set for %s (type %d)", domain, qtype)
 	}
 
 	return response.Answer
 }
 
 func (h *Handler) getFromCache(domain string, qtype uint16) []dns.RR {
-	h.log.Debugf("Cache getFromCache for %s (type %d)", domain, qtype)
+	h.log.Tracef("Cache getFromCache for %s (type %d)", domain, qtype)
 	result := h.dnsCache.Get(fmt.Sprintf("%s|%d", domain, qtype))
 	if len(result) > 0 {
-		h.log.Debugf("Cache hit for %s (type %d)", domain, qtype)
+		h.log.Tracef("Cache hit for %s (type %d)", domain, qtype)
 		for _, rr := range result {
-			h.log.Debugf("Cached RR: %s", rr.String())
+			h.log.Tracef("Cached RR: %s", rr.String())
 		}
 	} else {
-		h.log.Debugf("Cache miss for %s (type %d)", domain, qtype)
+		h.log.Tracef("Cache miss for %s (type %d)", domain, qtype)
 	}
 	return result
 }
 
 func (h *Handler) cacheResponse(domain string, qtype uint16, answers []dns.RR) {
-	h.log.Debugf("Cache set for %s (type %d)", domain, qtype)
+	h.log.Tracef("Cache set for %s (type %d)", domain, qtype)
 	var filtered []dns.RR
 	for _, rr := range answers {
 		if rr.Header().Rrtype == qtype {

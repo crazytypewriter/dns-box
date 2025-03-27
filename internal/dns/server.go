@@ -33,9 +33,10 @@ func (s *Server) startServer(ctx context.Context, addr string) {
 	defer s.wg.Done()
 
 	server := &dns.Server{
-		Addr:    addr,
-		Net:     "udp",
-		Handler: s.handler,
+		Addr:      addr,
+		Net:       "udp",
+		ReusePort: true,
+		Handler:   s.handler,
 	}
 
 	go func() {
