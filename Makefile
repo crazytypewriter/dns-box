@@ -16,10 +16,10 @@ config:
 	cp ./config.json /usr/local/var/www/
 
 copyConfig:
-	ssh be curl 192.168.31.1:8060/config.json  --output /data/dns-box/config.json
+	ssh be curl 192.168.31.194:8060/config.json  --output /data/dns-box/config.json
 
 copyToRouter:
-	ssh be curl 192.168.31.1:8060/$(PACKAGE_NAME) --output /data/dns-box/$(PACKAGE_NAME)
+	ssh be curl 192.168.31.194:8060/$(PACKAGE_NAME) --output /data/dns-box/$(PACKAGE_NAME)
 
 setRights:
 	ssh be chmod +x /data/dns-box/$(PACKAGE_NAME)
