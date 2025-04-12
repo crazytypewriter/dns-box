@@ -1,11 +1,11 @@
 package dns
 
 import (
-	"dns-box/internal/cache"
-	C "dns-box/internal/cache"
-	"dns-box/internal/config"
-	"dns-box/internal/ipset"
 	"fmt"
+	"github.com/crazytypewriter/dns-box/internal/cache"
+	C "github.com/crazytypewriter/dns-box/internal/cache"
+	"github.com/crazytypewriter/dns-box/internal/config"
+	"github.com/crazytypewriter/dns-box/internal/ipset"
 	"github.com/miekg/dns"
 	log "github.com/sirupsen/logrus"
 	"strings"
@@ -50,7 +50,7 @@ func (h *Handler) ServeDNS(w dns.ResponseWriter, r *dns.Msg) {
 
 func (h *Handler) shouldProcess(domain string) bool {
 	domainWithoutDot := strings.TrimSuffix(domain, ".")
-	h.log.Tracef("Should process domain: %s", domainWithoutDot)
+	h.log.Tracef("Check if domain exists in config or suffix config for: %s", domainWithoutDot)
 
 	if h.domainCache.Contains(domainWithoutDot) {
 		h.log.Debugf("Domain found in config, process: %s", domainWithoutDot)

@@ -29,6 +29,7 @@ func (c *DNSCache) Get(key string) []dns.RR {
 	expire := binary.BigEndian.Uint64(val[:8])
 	if time.Now().Unix() > int64(expire) {
 		c.cache.Del([]byte(key))
+		log.Tracef("Cache entry expired for key: %s", key)
 		return nil
 	}
 
@@ -81,6 +82,6 @@ func (c *DNSCache) Set(key string, rrs []dns.RR, ttl uint32) {
 		buf = append(buf, lenBuf...)
 		buf = append(buf, packed[:packedLen]...)
 	}
-
+	log.Tracef("Set cache with key, %s and ttl %d", key, ttl)
 	c.cache.Set([]byte(key), buf)
 }

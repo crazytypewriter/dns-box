@@ -2,8 +2,8 @@ package dns
 
 import (
 	"context"
-	"dns-box/internal/config"
 	"fmt"
+	"github.com/crazytypewriter/dns-box/internal/config"
 	"github.com/miekg/dns"
 	"sync"
 )

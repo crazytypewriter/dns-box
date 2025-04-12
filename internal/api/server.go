@@ -2,8 +2,8 @@ package api
 
 import (
 	"context"
-	"dns-box/internal/cache"
-	"dns-box/internal/config"
+	"github.com/crazytypewriter/dns-box/internal/cache"
+	"github.com/crazytypewriter/dns-box/internal/config"
 	log "github.com/sirupsen/logrus"
 	"net/http"
 	"time"

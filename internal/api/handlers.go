@@ -1,10 +1,10 @@
 package api
 
 import (
-	"dns-box/internal/cache"
-	"dns-box/internal/config"
 	"encoding/json"
 	"fmt"
+	"github.com/crazytypewriter/dns-box/internal/cache"
+	"github.com/crazytypewriter/dns-box/internal/config"
 	"io"
 	"net/http"
 	"strings"
