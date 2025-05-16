@@ -38,6 +38,7 @@ func (h *Handler) ServeDNS(w dns.ResponseWriter, r *dns.Msg) {
 	for _, question := range r.Question {
 		answers := h.resolver(question.Name, question.Qtype)
 		if h.shouldProcess(question.Name) {
+			h.log.Debugf("Processing question: %s", question.Name)
 			h.processAnswers(answers)
 		}
 		msg.Answer = append(msg.Answer, answers...)
@@ -74,13 +75,19 @@ func (h *Handler) processAnswers(answers []dns.RR) {
 		switch r := rr.(type) {
 		case *dns.A:
 			if h.config.IPSet.IPv4Name != "" {
-				h.ipSet.AddElement(h.config.IPSet.IPv4Name, r.A.String(), r.Hdr.Ttl)
-				h.log.Debugf("Added IPv4 address to ipset: %s", h.config.IPSet.IPv4Name)
+				err := h.ipSet.AddElement(h.config.IPSet.IPv4Name, r.A.String(), r.Hdr.Ttl)
+				if err != nil {
+					h.log.Error(fmt.Sprintf("Error %v added address %s to ipset: %s", err.Error(), r.A.String(), h.config.IPSet.IPv4Name))
+				}
+				h.log.Debugf("Added IPv4 address %s to ipset: %s", r.A.String(), h.config.IPSet.IPv4Name)
 			}
 		case *dns.AAAA:
 			if h.config.IPSet.IPv6Name != "" {
-				h.ipSet.AddElement(h.config.IPSet.IPv6Name, r.AAAA.String(), r.Hdr.Ttl)
-				h.log.Debugf("Added IPv6 address to ipset: %s", h.config.IPSet.IPv6Name)
+				err := h.ipSet.AddElement(h.config.IPSet.IPv6Name, r.AAAA.String(), r.Hdr.Ttl)
+				if err != nil {
+					h.log.Error(fmt.Sprintf("Error %v when added address %s to ipset: %s", err.Error(), r.AAAA.String(), h.config.IPSet.IPv4Name))
+				}
+				h.log.Debugf("Added IPv6 address %s to ipset: %s", r.AAAA.String(), h.config.IPSet.IPv6Name)
 			}
 		}
 	}
