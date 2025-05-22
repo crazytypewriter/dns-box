@@ -77,17 +77,17 @@ func (h *Handler) processAnswers(answers []dns.RR, question string) {
 			if h.config.IPSet.IPv4Name != "" {
 				err := h.ipSet.AddElement(h.config.IPSet.IPv4Name, r.A.String(), r.Hdr.Ttl)
 				if err != nil {
-					h.log.Error(fmt.Sprintf("Error %v added address %s with timeout %d to ipset: %s", err.Error(), r.A.String(), r.Hdr.Ttl, h.config.IPSet.IPv4Name))
+					h.log.Error(fmt.Sprintf("Error %v added address %s to ipset: %s", err.Error(), r.A.String(), h.config.IPSet.IPv4Name))
 				}
-				h.log.Debugf("Added IPv4 address %s for domain: %s, to ipset: %s", r.A.String(), question, h.config.IPSet.IPv4Name)
+				h.log.Debugf("Added IPv4 address %s with timeout %d for domain: %s, to ipset: %s", r.A.String(), r.Hdr.Ttl, question, h.config.IPSet.IPv4Name)
 			}
 		case *dns.AAAA:
 			if h.config.IPSet.IPv6Name != "" {
 				err := h.ipSet.AddElement(h.config.IPSet.IPv6Name, r.AAAA.String(), r.Hdr.Ttl)
 				if err != nil {
-					h.log.Error(fmt.Sprintf("Error %v when added address %s with timeout %d to ipset: %s", err.Error(), r.AAAA.String(), r.Hdr.Ttl, h.config.IPSet.IPv4Name))
+					h.log.Error(fmt.Sprintf("Error %v when added address %s to ipset: %s", err.Error(), r.AAAA.String(), h.config.IPSet.IPv4Name))
 				}
-				h.log.Debugf("Added IPv6 address %s for domain: %s, to ipset: %s", r.AAAA.String(), question, h.config.IPSet.IPv6Name)
+				h.log.Debugf("Added IPv6 address %s with timeout %d for domain: %s, to ipset: %s", r.AAAA.String(), r.Hdr.Ttl, question, h.config.IPSet.IPv6Name)
 			}
 		}
 	}
