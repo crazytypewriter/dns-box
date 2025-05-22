@@ -85,7 +85,7 @@ func (h *Handler) processAnswers(answers []dns.RR, question string) {
 			if h.config.IPSet.IPv6Name != "" {
 				err := h.ipSet.AddElement(h.config.IPSet.IPv6Name, r.AAAA.String(), r.Hdr.Ttl)
 				if err != nil {
-					h.log.Error(fmt.Sprintf("Error %v when added address %s with timeout %d to ipset: %s", err.Error(), r.AAAA.String(), r.Hdr.Ttl, wh.config.IPSet.IPv4Name))
+					h.log.Error(fmt.Sprintf("Error %v when added address %s with timeout %d to ipset: %s", err.Error(), r.AAAA.String(), r.Hdr.Ttl, h.config.IPSet.IPv4Name))
 				}
 				h.log.Debugf("Added IPv6 address %s for domain: %s, to ipset: %s", r.AAAA.String(), question, h.config.IPSet.IPv6Name)
 			}
