@@ -66,11 +66,13 @@ func run(ctx context.Context) error {
 	ipSet := ipset.New()
 	if cfg.IPSet.IPv4Name != "" {
 		if err := ipSet.CreateIPv4Set(cfg.IPSet.IPv4Name, 7200); err != nil {
+			l.Errorf("Error creating IPv4 set: %v", err)
 			return err
 		}
 	}
 	if cfg.IPSet.IPv6Name != "" {
 		if err := ipSet.CreateIPv6Set(cfg.IPSet.IPv6Name, 7200); err != nil {
+			l.Errorf("Error creating IPv6 set: %v", err)
 			return err
 		}
 	}
