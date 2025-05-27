@@ -59,12 +59,11 @@ func (h *Handler) shouldProcess(domain string) bool {
 	}
 
 	parts := strings.Split(domainWithoutDot, ".")
-	h.log.Debugf("Check if domain parts in config for: %s", parts)
-	for i := 0; i < len(parts)-1; i++ {
+	for i := 0; i <= len(parts)-2; i++ {
 		suffix := "." + strings.Join(parts[i:], ".")
 		h.log.Debugf("Check if suffix exists in config or suffix for: %s", suffix)
 		if h.domainCache.ContainsSuffix(suffix) {
-			h.log.Debugf("Domain found in suffix config, process: %s", domainWithoutDot)
+			h.log.Debugf("Domain matches suffix config, process: %s (suffix: %s)", domainWithoutDot, suffix)
 			return true
 		}
 	}
