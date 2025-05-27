@@ -51,7 +51,7 @@ func (h *Handler) ServeDNS(w dns.ResponseWriter, r *dns.Msg) {
 
 func (h *Handler) shouldProcess(domain string) bool {
 	domainWithoutDot := strings.TrimSuffix(domain, ".")
-	h.log.Tracef("Check if domain exists in config or suffix config for: %s", domainWithoutDot)
+	h.log.Debugf("Check if domain exists in config or suffix config for: %s", domainWithoutDot)
 
 	if h.domainCache.Contains(domainWithoutDot) {
 		h.log.Debugf("Domain found in config, process: %s", domainWithoutDot)
@@ -59,14 +59,17 @@ func (h *Handler) shouldProcess(domain string) bool {
 	}
 
 	parts := strings.Split(domainWithoutDot, ".")
-	for i := 0; i < len(parts)-2; i++ {
+	h.log.Debugf("Check if domain parts in config for: %s", parts)
+	for i := 0; i < len(parts)-1; i++ {
 		suffix := "." + strings.Join(parts[i:], ".")
+		h.log.Debugf("Check if suffix exists in config or suffix for: %s", suffix)
 		if h.domainCache.ContainsSuffix(suffix) {
 			h.log.Debugf("Domain found in suffix config, process: %s", domainWithoutDot)
 			return true
 		}
 	}
 
+	h.log.Debugf("Domain not found in domain cache: %s", domainWithoutDot)
 	return false
 }
 
