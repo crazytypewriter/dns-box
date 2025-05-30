@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
 	"github.com/crazytypewriter/dns-box/internal/api"
 	"github.com/crazytypewriter/dns-box/internal/cache"
 	C "github.com/crazytypewriter/dns-box/internal/cache"
@@ -43,12 +44,21 @@ func main() {
 
 func run(ctx context.Context) error {
 	cfg, err := config.LoadConfig(configPath)
+
 	if err != nil {
 		return err
 	}
 
 	l := log.New()
-	l.SetLevel(log.DebugLevel)
+
+	logLevel, err := log.ParseLevel(cfg.Server.Log)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error parsing log level: %v\n", err)
+		l.SetLevel(log.InfoLevel)
+	} else {
+		l.SetLevel(logLevel)
+	}
+
 	l.SetFormatter(&log.TextFormatter{
 		ForceColors: true,
 	})
