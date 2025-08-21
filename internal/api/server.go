@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"github.com/crazytypewriter/dns-box/internal/blocklist"
 	"github.com/crazytypewriter/dns-box/internal/cache"
 	"github.com/crazytypewriter/dns-box/internal/config"
 	log "github.com/sirupsen/logrus"
@@ -15,19 +16,21 @@ type Server struct {
 	dnsCache    *cache.DNSCache
 	httpServer  *http.Server
 	log         *log.Logger
+	blockList   *blocklist.BlockList
 }
 
-func NewServer(cfg *config.Config, dnsCache *cache.DNSCache, domainCache *cache.DomainCache, l *log.Logger) *Server {
+func NewServer(cfg *config.Config, dnsCache *cache.DNSCache, domainCache *cache.DomainCache, blockList *blocklist.BlockList, l *log.Logger) *Server {
 	return &Server{
 		cfg:         cfg,
 		dnsCache:    dnsCache,
 		domainCache: domainCache,
 		log:         l,
+		blockList:   blockList,
 	}
 }
 
 func (s *Server) Start(ctx context.Context, addr string) {
-	handlers := NewHandlers(s.cfg, s.dnsCache, s.domainCache)
+	handlers := NewHandlers(s.cfg, s.dnsCache, s.domainCache, s.blockList)
 
 	s.httpServer = &http.Server{
 		Addr:    addr,

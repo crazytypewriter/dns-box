@@ -4,17 +4,20 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"io"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
+
 	"github.com/crazytypewriter/dns-box/internal/api"
+	"github.com/crazytypewriter/dns-box/internal/blocklist"
 	"github.com/crazytypewriter/dns-box/internal/cache"
 	C "github.com/crazytypewriter/dns-box/internal/cache"
 	"github.com/crazytypewriter/dns-box/internal/config"
 	"github.com/crazytypewriter/dns-box/internal/dns"
 	"github.com/crazytypewriter/dns-box/internal/ipset"
 	log "github.com/sirupsen/logrus"
-	"os"
-	"os/signal"
-	"syscall"
-	"time"
 )
 
 var configPath string
@@ -37,19 +40,21 @@ func main() {
 		cancel()
 	}()
 
-	if err := run(ctx); err != nil {
+	if err := run(ctx, configPath, nil); err != nil {
 		log.Fatalf("Application error: %v", err)
 	}
 }
 
-func run(ctx context.Context) error {
+func run(ctx context.Context, configPath string, logOutput io.Writer) error {
 	cfg, err := config.LoadConfig(configPath)
-
 	if err != nil {
 		return err
 	}
 
 	l := log.New()
+	if logOutput != nil {
+		l.SetOutput(logOutput)
+	}
 
 	logLevel, err := log.ParseLevel(cfg.Server.Log)
 	if err != nil {
@@ -87,12 +92,18 @@ func run(ctx context.Context) error {
 		}
 	}
 
-	dnsHandler := dns.NewDnsHandler(cfg, dnsCache, domainCache, ipSet, l)
+	// Инициализация и запуск BlockList
+	blockList := blocklist.NewBlockList(&cfg.BlockList, l)
+	if cfg.BlockList.Enabled {
+		go blockList.Start(ctx)
+	}
+
+	dnsHandler := dns.NewDnsHandler(cfg, dnsCache, domainCache, ipSet, blockList, l)
 	dnsServer := dns.NewServer(cfg, dnsHandler)
 	go dnsServer.Start(ctx)
 	l.Infof("DNS server started on %s", cfg.Server.Address[0])
 
-	apiServer := api.NewServer(cfg, dnsCache, domainCache, l)
+	apiServer := api.NewServer(cfg, dnsCache, domainCache, blockList, l)
 	go apiServer.Start(ctx, ":8090")
 
 	<-ctx.Done()
@@ -103,10 +114,10 @@ func run(ctx context.Context) error {
 	l.Infof("Shutting down DNS server...")
 	dnsServer.Stop(shutdownCtx)
 	apiServer.Stop(shutdownCtx)
-	err = cfg.SaveWithUpdatedRules()
+	err = cfg.SaveConfig()
 	if err != nil {
 		l.Errorf("Failed to save config: %v", err)
 	}
 
-	return nil
+	return ctx.Err()
 }

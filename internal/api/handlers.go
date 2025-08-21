@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/crazytypewriter/dns-box/internal/blocklist"
 	"github.com/crazytypewriter/dns-box/internal/cache"
 	"github.com/crazytypewriter/dns-box/internal/config"
 	"io"
@@ -14,13 +15,15 @@ type Handlers struct {
 	cfg         *config.Config
 	dnsCache    *cache.DNSCache
 	domainCache *cache.DomainCache
+	blockList   *blocklist.BlockList
 }
 
-func NewHandlers(cfg *config.Config, dnsCache *cache.DNSCache, domainCache *cache.DomainCache) *Handlers {
+func NewHandlers(cfg *config.Config, dnsCache *cache.DNSCache, domainCache *cache.DomainCache, blockList *blocklist.BlockList) *Handlers {
 	return &Handlers{
 		cfg:         cfg,
 		dnsCache:    dnsCache,
 		domainCache: domainCache,
+		blockList:   blockList,
 	}
 }
 
@@ -28,6 +31,7 @@ func (h *Handlers) Routes() *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/domains", h.handleDomains)
 	mux.HandleFunc("/suffixes", h.handleSuffixes)
+	mux.HandleFunc("/blocklist/urls", h.handleBlocklistURLs)
 	return mux
 }
 
@@ -132,6 +136,66 @@ func (h *Handlers) addSuffixes(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	w.Write([]byte("ok"))
+}
+
+func (h *Handlers) handleBlocklistURLs(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		h.getBlocklistURLs(w, r)
+	case http.MethodPost:
+		h.addBlocklistURL(w, r)
+	case http.MethodDelete:
+		h.removeBlocklistURL(w, r)
+	default:
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+func (h *Handlers) getBlocklistURLs(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(h.cfg.BlockList.URLs); err != nil {
+		http.Error(w, "failed to encode URLs", http.StatusInternalServerError)
+	}
+}
+
+func (h *Handlers) addBlocklistURL(w http.ResponseWriter, r *http.Request) {
+	var payload struct {
+		URL string `json:"url"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	h.cfg.AddBlockListURL(payload.URL)
+	h.blockList.UpdateURLs(h.cfg.BlockList.URLs)
+	h.blockList.ForceRefresh()
+
+	if err := h.cfg.SaveConfig(); err != nil {
+		http.Error(w, "Failed to save config", http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h *Handlers) removeBlocklistURL(w http.ResponseWriter, r *http.Request) {
+	var payload struct {
+		URL string `json:"url"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	h.cfg.RemoveBlockListURL(payload.URL)
+	h.blockList.UpdateURLs(h.cfg.BlockList.URLs)
+	h.blockList.ForceRefresh()
+
+	if err := h.cfg.SaveConfig(); err != nil {
+		http.Error(w, "Failed to save config", http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (h *Handlers) removeSuffixes(w http.ResponseWriter, r *http.Request) {

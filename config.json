@@ -7,11 +7,12 @@
     "log": "debug"
   },
   "dns": {
-    "nameservers": [
-      "8.8.8.8:53",
-      "1.1.1.1:53"
+    "upstream_servers": [
+      "https://dns.google/dns-query",
+      "tls://1.1.1.1",
+      "8.8.8.8:53"
     ],
-    "timeout": 5
+    "cache_ttl": 3600
   },
   "ipset": {
     "ipv4name": "vpn_domains",
@@ -37,5 +38,12 @@
       ".youtubekids.com"
     ]
   },
+  "blocklist": {
+    "enabled": true,
+    "urls": [
+      "https://blocklistproject.github.io/Lists/tracking.txt"
+    ],
+    "refresh_hours": 24
+  },
   "Path": "/data/dns-box/config.json"
-}  
+}

@@ -13,8 +13,8 @@ type ServerConfig struct {
 }
 
 type DNSConfig struct {
-	Nameservers []string `json:"nameservers"`
-	Timeout     int      `json:"timeout"`
+	UpstreamServers []string `json:"upstream_servers"`
+	Timeout         int      `json:"timeout"`
 }
 
 type IPSetConfig struct {
@@ -27,13 +27,20 @@ type RulesConfig struct {
 	DomainSuffix []string `json:"domain_suffix"`
 }
 
+type BlockListConfig struct {
+	Enabled      bool     `json:"enabled"`
+	URLs         []string `json:"urls"`
+	RefreshHours int      `json:"refresh_hours"`
+}
+
 type Config struct {
-	Server ServerConfig `json:"server"`
-	DNS    DNSConfig    `json:"dns"`
-	IPSet  IPSetConfig  `json:"ipset"`
-	Rules  RulesConfig  `json:"rules"`
-	mu     sync.RWMutex
-	Path   string
+	Server    ServerConfig    `json:"server"`
+	DNS       DNSConfig       `json:"dns"`
+	IPSet     IPSetConfig     `json:"ipset"`
+	Rules     RulesConfig     `json:"rules"`
+	BlockList BlockListConfig `json:"blocklist"`
+	mu        sync.RWMutex    `json:"-"`
+	Path      string          `json:"-"`
 }
 
 func LoadConfig(filename string) (*Config, error) {
@@ -52,7 +59,8 @@ func LoadConfig(filename string) (*Config, error) {
 	return &cfg, nil
 }
 
-func (c *Config) SaveWithUpdatedRules() error {
+// SaveConfig сохраняет текущую конфигурацию в файл.
+func (c *Config) SaveConfig() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -62,27 +70,27 @@ func (c *Config) SaveWithUpdatedRules() error {
 	}
 	defer file.Close()
 
+	// Читаем только статичные части конфига
 	var tempConfig struct {
-		Server ServerConfig `json:"server"`
-		DNS    DNSConfig    `json:"dns"`
-		IPSet  IPSetConfig  `json:"ipset"`
+		Server    ServerConfig    `json:"server"`
+		DNS       DNSConfig       `json:"dns"`
+		IPSet     IPSetConfig     `json:"ipset"`
+		BlockList BlockListConfig `json:"blocklist"`
+		Rules     RulesConfig     `json:"rules"`
 	}
 
 	if err := json.NewDecoder(file).Decode(&tempConfig); err != nil {
 		return err
 	}
 
-	rules := RulesConfig{
-		Domains:      c.Rules.Domains,
-		DomainSuffix: c.Rules.DomainSuffix,
-	}
-
+	// Собираем финальный конфиг из статичных частей (из файла)
+	// и динамических (из памяти)
 	finalConfig := Config{
-		Server: tempConfig.Server,
-		DNS:    tempConfig.DNS,
-		IPSet:  tempConfig.IPSet,
-		Rules:  rules,
-		Path:   c.Path,
+		Server:    tempConfig.Server,
+		DNS:       tempConfig.DNS,
+		IPSet:     tempConfig.IPSet,
+		Rules:     c.Rules,
+		BlockList: c.BlockList,
 	}
 
 	outFile, err := os.Create(c.Path)
@@ -146,3 +154,30 @@ func (c *Config) RemoveSuffix(suffix string) {
 }
 
 var ErrNoConfigPath = errors.New("no config file path specified")
+
+// AddBlockListURL добавляет новый URL в список, если он еще не существует.
+func (c *Config) AddBlockListURL(url string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	for _, u := range c.BlockList.URLs {
+		if u == url {
+			return // URL уже существует
+		}
+	}
+	c.BlockList.URLs = append(c.BlockList.URLs, url)
+}
+
+// RemoveBlockListURL удаляет URL из списка.
+func (c *Config) RemoveBlockListURL(url string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	newURLs := make([]string, 0, len(c.BlockList.URLs))
+	for _, u := range c.BlockList.URLs {
+		if u != url {
+			newURLs = append(newURLs, u)
+		}
+	}
+	c.BlockList.URLs = newURLs
+}
