@@ -129,6 +129,9 @@ func (b *BlockList) updateLists() {
 }
 
 func (b *BlockList) IsBlocked(domain string) bool {
+	if b.blockedDomains == nil {
+		return false
+	}
 	return b.blockedDomains.Contains(domain)
 }
 

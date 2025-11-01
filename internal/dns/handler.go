@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -46,7 +47,7 @@ func (h *Handler) ServeDNS(w dns.ResponseWriter, r *dns.Msg) {
 
 	for _, question := range r.Question {
 		domain := strings.TrimSuffix(question.Name, ".")
-		if h.blockList.IsBlocked(domain) {
+		if h.blockList != nil && h.blockList.IsBlocked(domain) {
 			h.log.Debugf("Blocked domain: %s", domain)
 			rr, err := dns.NewRR(fmt.Sprintf("%s A 0.0.0.0", question.Name))
 			if err == nil {
@@ -145,7 +146,14 @@ func (h *Handler) resolver(domain string, qtype uint16) []dns.RR {
 
 		// Add port if missing for specific schemes
 		host := u.Host
-		if !strings.Contains(host, ":") {
+		// Add port if missing
+		if _, _, err := net.SplitHostPort(host); err != nil {
+			// Check if the host is a bare IPv6 address
+			if ip := net.ParseIP(host); ip != nil && ip.To4() == nil {
+				host = fmt.Sprintf("[%s]", host)
+			}
+
+			// Now add the port
 			switch u.Scheme {
 			case "tls", "dot":
 				host = fmt.Sprintf("%s:%d", host, 853)
@@ -187,7 +195,7 @@ func (h *Handler) resolver(domain string, qtype uint16) []dns.RR {
 				Net:     "udp",
 				Timeout: time.Duration(h.config.DNS.Timeout) * time.Second,
 			}
-			response, _, err = client.Exchange(m, ns) // Use original string
+			response, _, err = client.Exchange(m, host)
 		}
 
 		if err == nil && response != nil && response.Rcode == dns.RcodeSuccess {

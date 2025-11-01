@@ -32,15 +32,21 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	log.Debug("Setting up signal handler...")
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
-		sig := <-sigChan
-		log.Infof("Received signal: %v", sig)
-		cancel()
+		select {
+		case sig := <-sigChan:
+			log.Infof("Received signal: %v. Initiating graceful shutdown...", sig)
+			cancel()
+		case <-ctx.Done():
+			log.Debug("Context cancelled, signal handler goroutine exiting.")
+			return
+		}
 	}()
 
-	if err := run(ctx, configPath, nil); err != nil {
+	if err := run(ctx, configPath, nil); err != nil && err != context.Canceled {
 		log.Fatalf("Application error: %v", err)
 	}
 }
@@ -78,23 +84,30 @@ func run(ctx context.Context, configPath string, logOutput io.Writer) error {
 		domainCache.AddSuffix(suffix)
 	}
 
+	l.Debugf("Initializing ipset...")
 	ipSet := ipset.New()
+	l.Debugf("IPSet initialized.")
 	if cfg.IPSet.IPv4Name != "" {
+		l.Debugf("Creating IPv4 set: %s", cfg.IPSet.IPv4Name)
 		if err := ipSet.CreateIPv4Set(cfg.IPSet.IPv4Name, 7200); err != nil {
 			l.Errorf("Error creating IPv4 set: %v", err)
 			return err
 		}
+		l.Debugf("IPv4 set %s created successfully.", cfg.IPSet.IPv4Name)
 	}
 	if cfg.IPSet.IPv6Name != "" {
+		l.Debugf("Creating IPv6 set: %s", cfg.IPSet.IPv6Name)
 		if err := ipSet.CreateIPv6Set(cfg.IPSet.IPv6Name, 7200); err != nil {
 			l.Errorf("Error creating IPv6 set: %v", err)
 			return err
 		}
+		l.Debugf("IPv6 set %s created successfully.", cfg.IPSet.IPv6Name)
 	}
 
 	// Инициализация и запуск BlockList
-	blockList := blocklist.NewBlockList(&cfg.BlockList, l)
+	var blockList *blocklist.BlockList
 	if cfg.BlockList.Enabled {
+		blockList = blocklist.NewBlockList(&cfg.BlockList, l)
 		go blockList.Start(ctx)
 	}
 
