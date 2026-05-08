@@ -15,14 +15,14 @@ copy:
 config:
 	cp ./config.json /usr/local/var/www/
 
-copyConfig:
-	ssh be curl 192.168.31.194:8060/config.json  --output /data/dns-box/config.json
+#copyConfig:
+#	ssh be curl 192.168.31.115:8060/config.json  --output /data/dns-box/config.json
 
 copyToRouter:
-	ssh be curl 192.168.31.194:8060/$(PACKAGE_NAME) --output /data/dns-box/$(PACKAGE_NAME)
+	scp -O -o HostKeyAlgorithms=+ssh-rsa ./$(PACKAGE_NAME)  be:/tmp/dns-box/
 
 setRights:
-	ssh be chmod +x /data/dns-box/$(PACKAGE_NAME)
+	ssh be chmod +x /tmp/dns-box/$(PACKAGE_NAME)
 
 restart:
 	ssh be /etc/init.d/$(PACKAGE_NAME) restart

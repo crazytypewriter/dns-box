@@ -24,6 +24,18 @@ func (i *IPSet) CreateIPv6Set(name string, timeout uint32) error {
 	return I.Create(name, I.OptIPv6(), I.OptTimeout(timeout))
 }
 
+func (i *IPSet) CreateIPv4NetSet(name string, timeout uint32) error {
+	return I.Create(name, I.OptType("hash:net"), I.OptTimeout(timeout))
+}
+
+func (i *IPSet) CreateIPv6NetSet(name string, timeout uint32) error {
+	return I.Create(name, I.OptType("hash:net"), I.OptIPv6(), I.OptTimeout(timeout))
+}
+
 func (i *IPSet) AddElement(setName, ip string, ttl uint32) error {
 	return I.Add(setName, ip, I.OptTimeout(ttl))
+}
+
+func (i *IPSet) RemoveElement(setName, ip string) error {
+	return I.Del(setName, ip)
 }

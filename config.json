@@ -10,40 +10,122 @@
     "upstream_servers": [
       "https://dns.google/dns-query",
       "tls://1.1.1.1",
-      "8.8.8.8:53"
+      "8.8.8.8:53",
+      "62.112.106.130",
+      "62.112.113.170",
+      "2a00:1370:1111:100::a401:d61"
     ],
-    "cache_ttl": 3600
+    "timeout": 0
   },
   "ipset": {
-    "ipv4name": "vpn_domains",
-    "ipv6name": "vpn_domains6"
-  },
-  "rules": {
-    "domain": [
-      "rutor.is",
-      "rutracker.org"
+    "ipv4name": "",
+    "ipv6name": "",
+    "lists": [
+      {
+        "name": "vpn_domains",
+        "enable_ipv6": true,
+        "timeout": 7200,
+        "rules": {
+          "domain": [
+            "rutor.is",
+            "rutracker.org"
+          ],
+          "domain_suffix": [
+            ".jetbrains.team",
+            ".rustorka.com",
+            ".rutor.info",
+            ".rutor.is",
+            ".rutor.org",
+            ".rutor.cc",
+            ".rutracker.cc",
+            ".rutracker.net",
+            ".rutracker.org",
+            ".rutracker.ru",
+            ".rutracker.wiki",
+            ".rutrk.org",
+            ".googleusercontent.com",
+            ".facebook.com",
+            ".facebook.com.es",
+            ".facebook.com.vn",
+            ".facebook.fr",
+            ".facebook.net",
+            ".fast.com",
+            ".fb.com",
+            ".fb.me",
+            ".fbcdn.com",
+            ".fbcdn.net",
+            ".fbsbx.com",
+            ".nnmclub.to",
+            ".nnmstatic.win"
+          ]
+        }
+      },
+      {
+        "name": "youtube_domains",
+        "enable_ipv6": true,
+        "timeout": 7200,
+        "rules": {
+          "domain": [],
+          "domain_suffix": [
+            ".googlevideo.com",
+            ".youtube.com",
+            ".ytimg.com",
+            ".play.google.com",
+            ".youtubei.googleapis.com",
+            ".ytimg.l.google.com",
+            ".youtube.googleapis.com",
+            ".youtube-nocookie.com",
+            ".doubleclick.net",
+            ".ggpht.com",
+            ".www.youtube.com",
+            ".youtubekids.com",
+            ".youtu.be"
+          ]
+        }
+      }
     ],
-    "domain_suffix": [
-      ".googlevideo.com",
-      ".ytimg.com",
-      ".play.google.com",
-      ".youtubei.googleapis.com",
-      ".ytimg.l.google.com",
-      ".youtube.googleapis.com",
-      ".youtube.com",
-      ".youtube-nocookie.com",
-      ".doubleclick.net",
-      ".ggpht.com",
-      ".www.youtube.com",
-      ".youtubekids.com"
+    "net_lists": [
+      {
+        "name": "vpn_subnets",
+        "enable_ipv6": true,
+        "timeout": 7200,
+        "asn": "15169",
+        "cidr": [
+          "91.108.56.0/22",
+          "91.108.4.0/22",
+          "91.108.8.0/22",
+          "91.108.16.0/22",
+          "91.108.12.0/22",
+          "149.154.160.0/20",
+          "91.105.192.0/23",
+          "91.108.20.0/22",
+          "185.76.151.0/24",
+          "2001:b28:f23d::/48",
+          "2001:b28:f23f::/48",
+          "2001:67c:4e8::/48",
+          "2001:b28:f23c::/48",
+          "2a0a:f280::/32"
+        ]
+      }
     ]
   },
-  "blocklist": {
+  "github_backup": {
     "enabled": true,
+    "token": "",
+    "owner": "crazytypewriter",
+    "repo": "backup",
+    "path": "hosts_config.json",
+    "branch": "main"
+  },
+  "rules": {
+    "domain": null,
+    "domain_suffix": null
+  },
+  "blocklist": {
+    "enabled": false,
     "urls": [
       "https://blocklistproject.github.io/Lists/tracking.txt"
     ],
     "refresh_hours": 24
-  },
-  "Path": "/data/dns-box/config.json"
+  }
 }

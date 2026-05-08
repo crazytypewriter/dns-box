@@ -25,25 +25,51 @@ type Handler struct {
 	dnsCache    *C.DNSCache
 	domainCache *cache.DomainCache
 	ipSet       *ipset.IPSet
-	blockList   *blocklist.BlockList // Новое поле
+	blockList   *blocklist.BlockList
 	log         *log.Logger
+	httpClient  *http.Client // общий клиент для DoH с reuse соединений
+	timeout     time.Duration
+
+	// Per-list domain caches for routing IPs to correct ipsets
+	listDomainCaches map[int]*cache.DomainCache
 }
 
-func NewDnsHandler(cfg *config.Config, dnsCache *C.DNSCache, domainCache *cache.DomainCache, ipSet *ipset.IPSet, blockList *blocklist.BlockList, log *log.Logger) *Handler {
-	return &Handler{
+func NewDnsHandler(cfg *config.Config, dnsCache *C.DNSCache, domainCache *cache.DomainCache, ipSet *ipset.IPSet, blockList *blocklist.BlockList, listDomainCaches map[int]*cache.DomainCache, l *log.Logger) *Handler {
+	timeout := time.Duration(cfg.DNS.Timeout) * time.Second
+	if cfg.DNS.Timeout <= 0 {
+		timeout = 5 * time.Second
+	}
+
+	h := &Handler{
 		config:      cfg,
 		dnsCache:    dnsCache,
 		domainCache: domainCache,
 		ipSet:       ipSet,
-		blockList:   blockList, // Инициализация нового поля
-		log:         log,
+		blockList:   blockList,
+		log:         l,
+		timeout:     timeout,
+		httpClient: &http.Client{
+			Timeout: timeout,
+			Transport: &http.Transport{
+				MaxIdleConns:        10,
+				MaxIdleConnsPerHost: 5,
+				IdleConnTimeout:     90 * time.Second,
+				TLSHandshakeTimeout: 5 * time.Second,
+			},
+		},
+		listDomainCaches: listDomainCaches,
 	}
+
+	return h
 }
 
 func (h *Handler) ServeDNS(w dns.ResponseWriter, r *dns.Msg) {
 	msg := new(dns.Msg)
 	msg.SetReply(r)
 	msg.Authoritative = true
+	if edns := r.IsEdns0(); edns != nil {
+		msg.SetEdns0(4096, edns.Do())
+	}
 
 	for _, question := range r.Question {
 		domain := strings.TrimSuffix(question.Name, ".")
@@ -56,12 +82,15 @@ func (h *Handler) ServeDNS(w dns.ResponseWriter, r *dns.Msg) {
 			continue
 		}
 
-		answers := h.resolver(question.Name, question.Qtype)
+		answers, rcode := h.resolver(question.Name, question.Qtype, 0)
 		if h.shouldProcess(question.Name) {
 			h.log.Debugf("Processing question: %s", question.Name)
 			h.processAnswers(answers, question.Name)
 		}
 		msg.Answer = append(msg.Answer, answers...)
+		if rcode != dns.RcodeSuccess {
+			msg.Rcode = rcode
+		}
 	}
 
 	if err := w.WriteMsg(msg); err != nil {
@@ -69,10 +98,38 @@ func (h *Handler) ServeDNS(w dns.ResponseWriter, r *dns.Msg) {
 	}
 }
 
+// normalizeTTL применяет политику ограничения TTL:
+//   - TTL <= 0    → 3600 (защита от нулевых/отрицательных)
+//   - TTL < 180   → 900  (минимум 15 минут для коротких TTL)
+//   - иначе       → TTL
+//   - затем clamp [300, 3600]
+func normalizeTTL(ttl uint32) uint32 {
+	var effective uint32
+
+	if ttl <= 0 {
+		effective = 3600
+	} else if ttl < 180 {
+		effective = 900
+	} else {
+		effective = ttl
+	}
+
+	// Жёсткие границы
+	if effective < 300 {
+		effective = 300
+	}
+	if effective > 3600 {
+		effective = 3600
+	}
+
+	return effective
+}
+
 func (h *Handler) shouldProcess(domain string) bool {
 	domainWithoutDot := strings.TrimSuffix(domain, ".")
 	h.log.Debugf("Check if domain exists in config or suffix config for: %s", domainWithoutDot)
 
+	// Check global cache (legacy mode)
 	if h.domainCache.Contains(domainWithoutDot) {
 		h.log.Debugf("Domain found in config, process: %s", domainWithoutDot)
 		return true
@@ -88,72 +145,127 @@ func (h *Handler) shouldProcess(domain string) bool {
 		}
 	}
 
+	// Check per-list caches (new multi-list mode)
+	for listIndex, listCache := range h.listDomainCaches {
+		if listCache.Contains(domainWithoutDot) {
+			h.log.Debugf("Domain found in list %d config, process: %s", listIndex, domainWithoutDot)
+			return true
+		}
+		for i := 0; i <= len(parts)-2; i++ {
+			suffix := "." + strings.Join(parts[i:], ".")
+			if listCache.ContainsSuffix(suffix) {
+				h.log.Debugf("Domain matches suffix in list %d config, process: %s (suffix: %s)", listIndex, domainWithoutDot, suffix)
+				return true
+			}
+		}
+	}
+
 	h.log.Debugf("Domain not found in domain cache: %s", domainWithoutDot)
 	return false
 }
 
 func (h *Handler) processAnswers(answers []dns.RR, question string) {
+	ipSetLists := h.config.GetIPSetLists()
+
 	for _, rr := range answers {
 		switch r := rr.(type) {
 		case *dns.A:
-			if h.config.IPSet.IPv4Name != "" {
-				err := h.ipSet.AddElement(h.config.IPSet.IPv4Name, r.A.String(), r.Hdr.Ttl)
-				if err != nil {
-					h.log.Error(fmt.Sprintf("Error %v added address %s to ipset: %s", err.Error(), r.A.String(), h.config.IPSet.IPv4Name))
+			// Find which lists this domain belongs to
+			for i, listCfg := range ipSetLists {
+				if h.isDomainInList(question, i) {
+					ipv4Name := listCfg.Name
+					effectiveTTL := normalizeTTL(r.Hdr.Ttl)
+					err := h.ipSet.AddElement(ipv4Name, r.A.String(), effectiveTTL)
+					if err != nil {
+						h.log.Error(fmt.Sprintf("Error %v added address %s to ipset: %s", err.Error(), r.A.String(), ipv4Name))
+					}
+					h.log.Debugf("Added IPv4 address %s with original TTL %d, effective TTL %d for domain: %s, to ipset: %s", r.A.String(), r.Hdr.Ttl, effectiveTTL, question, ipv4Name)
 				}
-				h.log.Debugf("Added IPv4 address %s with timeout %d for domain: %s, to ipset: %s", r.A.String(), r.Hdr.Ttl, question, h.config.IPSet.IPv4Name)
 			}
 		case *dns.AAAA:
-			if h.config.IPSet.IPv6Name != "" {
-				err := h.ipSet.AddElement(h.config.IPSet.IPv6Name, r.AAAA.String(), r.Hdr.Ttl)
-				if err != nil {
-					h.log.Error(fmt.Sprintf("Error %v when added address %s to ipset: %s", err.Error(), r.AAAA.String(), h.config.IPSet.IPv4Name))
+			// Find which lists this domain belongs to
+			for i, listCfg := range ipSetLists {
+				if h.isDomainInList(question, i) && listCfg.EnableIPv6 {
+					ipv6Name := listCfg.Name + "6"
+					effectiveTTL := normalizeTTL(r.Hdr.Ttl)
+					err := h.ipSet.AddElement(ipv6Name, r.AAAA.String(), effectiveTTL)
+					if err != nil {
+						h.log.Error(fmt.Sprintf("Error %v when added address %s to ipset: %s", err.Error(), r.AAAA.String(), ipv6Name))
+					}
+					h.log.Debugf("Added IPv6 address %s with original TTL %d, effective TTL %d for domain: %s, to ipset: %s", r.AAAA.String(), r.Hdr.Ttl, effectiveTTL, question, ipv6Name)
 				}
-				h.log.Debugf("Added IPv6 address %s with timeout %d for domain: %s, to ipset: %s", r.AAAA.String(), r.Hdr.Ttl, question, h.config.IPSet.IPv6Name)
 			}
 		}
 	}
 }
 
-func (h *Handler) resolver(domain string, qtype uint16) []dns.RR {
-	if cached := h.getFromCache(domain, qtype); len(cached) > 0 {
-		h.log.Tracef("Cache hit for %s (type %d)", domain, qtype)
-		return cached
+// isDomainInList checks if a domain matches the rules for a specific ipset list.
+func (h *Handler) isDomainInList(domain string, listIndex int) bool {
+	listCache, ok := h.listDomainCaches[listIndex]
+	if !ok {
+		return false
+	}
+
+	domainWithoutDot := strings.TrimSuffix(domain, ".")
+
+	if listCache.Contains(domainWithoutDot) {
+		return true
+	}
+
+	parts := strings.Split(domainWithoutDot, ".")
+	for i := 0; i <= len(parts)-2; i++ {
+		suffix := "." + strings.Join(parts[i:], ".")
+		if listCache.ContainsSuffix(suffix) {
+			return true
+		}
+	}
+
+	return false
+}
+
+func (h *Handler) resolver(domain string, qtype uint16, depth int) ([]dns.RR, int) {
+	if depth > 10 {
+		h.log.Warnf("CNAME loop detected for %s", domain)
+		return nil, dns.RcodeServerFailure
+	}
+
+	cached := h.getFromCache(domain, qtype)
+	if cached != nil {
+		h.log.Tracef("Cache hit for %s (type %d), returning %d records", domain, qtype, len(cached))
+		return cached, dns.RcodeSuccess
 	}
 
 	m := new(dns.Msg)
 	m.SetQuestion(dns.Fqdn(domain), qtype)
 	m.RecursionDesired = true
+	m.SetEdns0(1232, true) // Enable EDNS0 for upstream queries
 
 	var response *dns.Msg
 	var err error
 
-	// Sort servers by protocol priority: DoH/DoT > TCP > UDP
 	sortedServers := h.sortServers(h.config.DNS.UpstreamServers)
 
 	for _, ns := range sortedServers {
 		u, parseErr := url.Parse(ns)
 		if parseErr != nil {
-			// Fallback for simple IP addresses like 8.8.8.8:53
 			if !strings.Contains(ns, "://") {
 				u = &url.URL{Scheme: "udp", Host: ns}
-				parseErr = nil
 			} else {
 				h.log.Warnf("Failed to parse upstream %s: %v", ns, parseErr)
 				continue
 			}
 		}
 
-		// Add port if missing for specific schemes
 		host := u.Host
-		// Add port if missing
 		if _, _, err := net.SplitHostPort(host); err != nil {
-			// Check if the host is a bare IPv6 address
-			if ip := net.ParseIP(host); ip != nil && ip.To4() == nil {
-				host = fmt.Sprintf("[%s]", host)
+			// If host is a valid IP address, it doesn't have a port
+			ip := net.ParseIP(host)
+			if ip != nil {
+				if ip.To4() == nil { // It's an IPv6 address
+					host = fmt.Sprintf("[%s]", host)
+				}
 			}
-
-			// Now add the port
+			// Now, add the port based on the scheme
 			switch u.Scheme {
 			case "tls", "dot":
 				host = fmt.Sprintf("%s:%d", host, 853)
@@ -164,59 +276,83 @@ func (h *Handler) resolver(domain string, qtype uint16) []dns.RR {
 			}
 		}
 
-		h.log.Debugf("Querying upstream %s using %s", ns, u.Scheme)
+		h.log.Debugf("Querying upstream %s using %s for %s", ns, u.Scheme, domain)
 
 		switch u.Scheme {
 		case "https", "doh":
 			response, err = h.exchangeDoH(m, ns)
 		case "tls", "dot":
-			client := &dns.Client{
-				Net:     "tcp-tls",
-				Timeout: time.Duration(h.config.DNS.Timeout) * time.Second,
-				TLSConfig: &tls.Config{
-					ServerName: u.Hostname(),
-				},
-			}
+			client := &dns.Client{Net: "tcp-tls", Timeout: h.timeout, TLSConfig: &tls.Config{ServerName: u.Hostname()}}
 			response, _, err = client.Exchange(m, host)
 		case "tcp":
-			client := &dns.Client{
-				Net:     "tcp",
-				Timeout: time.Duration(h.config.DNS.Timeout) * time.Second,
-			}
+			client := &dns.Client{Net: "tcp", Timeout: h.timeout}
 			response, _, err = client.Exchange(m, host)
-		case "udp":
-			client := &dns.Client{
-				Net:     "udp",
-				Timeout: time.Duration(h.config.DNS.Timeout) * time.Second,
-			}
-			response, _, err = client.Exchange(m, host)
-		default: // Defaults to UDP
-			client := &dns.Client{
-				Net:     "udp",
-				Timeout: time.Duration(h.config.DNS.Timeout) * time.Second,
-			}
+		default: // udp
+			client := &dns.Client{Net: "udp", Timeout: h.timeout}
 			response, _, err = client.Exchange(m, host)
 		}
 
-		if err == nil && response != nil && response.Rcode == dns.RcodeSuccess {
-			h.log.Debugf("Successfully resolved %s via %s", domain, ns)
-			break
+		if err == nil && response != nil {
+			if response.Rcode == dns.RcodeSuccess || response.Rcode == dns.RcodeNameError {
+				h.log.Debugf("Received a valid response for %s via %s with Rcode: %s", domain, ns, dns.RcodeToString[response.Rcode])
+				break
+			}
 		}
-		h.log.Warnf("DNS error with %s (%s): %v", ns, u.Scheme, err)
-		response = nil // Reset response to ensure we try the next server
+		rcode := "N/A"
+		if response != nil {
+			rcode = dns.RcodeToString[response.Rcode]
+		}
+		h.log.Warnf("DNS error with %s (%s): %v, Rcode: %s", ns, u.Scheme, err, rcode)
+		response = nil
 	}
 
 	if response == nil {
 		h.log.Errorf("All DNS servers failed for %s", domain)
-		return nil
+		return nil, dns.RcodeServerFailure
 	}
 
-	if len(response.Answer) > 0 {
-		h.cacheResponse(domain, qtype, response.Answer)
+	if response.Rcode == dns.RcodeNameError {
+		ttl := uint32(h.config.DNS.Timeout) // Default TTL
+		if ttl == 0 {
+			ttl = 300
+		}
+		if len(response.Ns) > 0 {
+			if soa, ok := response.Ns[0].(*dns.SOA); ok && soa != nil {
+				ttl = soa.Minttl
+			}
+		}
+		effectiveTTL := normalizeTTL(ttl)
+		h.dnsCache.Set(fmt.Sprintf("%s|%d", domain, qtype), []dns.RR{}, effectiveTTL)
+		h.log.Tracef("Negative cache set for %s (type %d) with TTL %d (effective %d)", domain, qtype, ttl, effectiveTTL)
+		return nil, dns.RcodeNameError
+	}
+
+	finalAnswers := make([]dns.RR, 0)
+	cnameChain := make([]dns.RR, 0)
+
+	for _, answer := range response.Answer {
+		if cname, ok := answer.(*dns.CNAME); ok {
+			h.log.Debugf("Found CNAME for %s: %s", domain, cname.Target)
+			cnameChain = append(cnameChain, answer)
+			recursiveAnswers, rcode := h.resolver(cname.Target, qtype, depth+1)
+			if rcode == dns.RcodeSuccess {
+				finalAnswers = append(cnameChain, recursiveAnswers...)
+				h.cacheResponse(domain, qtype, finalAnswers)
+				return finalAnswers, dns.RcodeSuccess
+			}
+			// propagate error/NXDOMAIN but still return CNAMEs we found
+			return append(cnameChain, recursiveAnswers...), rcode
+		} else {
+			finalAnswers = append(finalAnswers, answer)
+		}
+	}
+
+	if len(finalAnswers) > 0 {
+		h.cacheResponse(domain, qtype, finalAnswers)
 		h.log.Tracef("Cache set for %s (type %d)", domain, qtype)
 	}
 
-	return response.Answer
+	return finalAnswers, dns.RcodeSuccess
 }
 
 func (h *Handler) getFromCache(domain string, qtype uint16) []dns.RR {
@@ -235,24 +371,20 @@ func (h *Handler) getFromCache(domain string, qtype uint16) []dns.RR {
 
 func (h *Handler) cacheResponse(domain string, qtype uint16, answers []dns.RR) {
 	h.log.Tracef("Cache set for %s (type %d)", domain, qtype)
-	var filtered []dns.RR
-	for _, rr := range answers {
-		if rr.Header().Rrtype == qtype {
-			filtered = append(filtered, rr)
-		}
-	}
-	if len(filtered) == 0 {
+	if len(answers) == 0 {
 		return
 	}
 
-	ttl := filtered[0].Header().Ttl
-	for _, rr := range filtered {
+	ttl := answers[0].Header().Ttl
+	for _, rr := range answers {
 		if rr.Header().Ttl < ttl {
 			ttl = rr.Header().Ttl
 		}
 	}
 
-	h.dnsCache.Set(fmt.Sprintf("%s|%d", domain, qtype), filtered, ttl)
+	effectiveTTL := normalizeTTL(ttl)
+	h.dnsCache.Set(fmt.Sprintf("%s|%d", domain, qtype), answers, effectiveTTL)
+	h.log.Tracef("Cache set for %s (type %d) with TTL %d (effective %d)", domain, qtype, ttl, effectiveTTL)
 }
 
 func (h *Handler) exchangeDoH(m *dns.Msg, endpoint string) (*dns.Msg, error) {
@@ -278,15 +410,15 @@ func (h *Handler) exchangeDoH(m *dns.Msg, endpoint string) (*dns.Msg, error) {
 	req.Header.Set("Content-Type", "application/dns-message")
 	req.Header.Set("Accept", "application/dns-message")
 
-	client := &http.Client{
-		Timeout: time.Duration(h.config.DNS.Timeout) * time.Second,
-	}
-
-	resp, err := client.Do(req)
+	resp, err := h.httpClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to perform DoH request: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() {
+		if resp.Body != nil {
+			resp.Body.Close()
+		}
+	}()
 
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("DoH request failed with status code: %d", resp.StatusCode)

@@ -85,6 +85,7 @@ func (b *BlockList) updateLists() {
 			}
 			if resp.StatusCode != http.StatusOK {
 				b.logger.Errorf("Failed to download blocklist from %s: status code %d", url, resp.StatusCode)
+				resp.Body.Close()
 				continue
 			}
 			body = resp.Body
@@ -95,7 +96,6 @@ func (b *BlockList) updateLists() {
 				continue
 			}
 		}
-		defer body.Close()
 
 		// Парсинг доменов
 		scanner := bufio.NewScanner(body)
@@ -112,6 +112,7 @@ func (b *BlockList) updateLists() {
 				domainsLoaded++
 			}
 		}
+		body.Close()
 
 		if err := scanner.Err(); err != nil {
 			b.logger.Errorf("Error reading blocklist from %s: %v", url, err)
