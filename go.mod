@@ -3,7 +3,7 @@ module github.com/crazytypewriter/dns-box
 go 1.27.1
 
 require (
-	github.com/VictoriaMetrics/fastcache v1.13.0
+	github.com/VictoriaMetrics/fastcache v1.13.3
 	github.com/crazytypewriter/ipset v0.1.1-0.20260904125125-99a675cabfed
 	github.com/google/go-github/v62 v62.0.0
 	github.com/miekg/dns v1.1.68
