@@ -117,29 +117,39 @@ func TestShouldPrefetch(t *testing.T) {
 
 // fakeIPSet записывает вызовы для проверок в тестах.
 type fakeIPSet struct {
-	added   map[string]map[string]uint32 // set -> ip -> ttl
-	created map[string]bool
+	added    map[string]map[string]uint32 // set -> ip -> ttl
+	created  map[string]bool
+	maxElem  map[string]uint32
+	listErr  error
+	existing map[string][]string // что «уже лежит» в сете для ListElements
 }
 
 func newFakeIPSet() *fakeIPSet {
-	return &fakeIPSet{added: map[string]map[string]uint32{}, created: map[string]bool{}}
+	return &fakeIPSet{
+		added:    map[string]map[string]uint32{},
+		created:  map[string]bool{},
+		maxElem:  map[string]uint32{},
+		existing: map[string][]string{},
+	}
 }
 
-func (f *fakeIPSet) CreateIPv4Set(name string, timeout uint32) error {
+func (f *fakeIPSet) create(name string, maxElem uint32) error {
 	f.created[name] = true
+	f.maxElem[name] = maxElem
 	return nil
 }
-func (f *fakeIPSet) CreateIPv6Set(name string, timeout uint32) error {
-	f.created[name] = true
-	return nil
+
+func (f *fakeIPSet) CreateIPv4Set(name string, timeout, maxElem uint32) error {
+	return f.create(name, maxElem)
 }
-func (f *fakeIPSet) CreateIPv4NetSet(name string, timeout uint32) error {
-	f.created[name] = true
-	return nil
+func (f *fakeIPSet) CreateIPv6Set(name string, timeout, maxElem uint32) error {
+	return f.create(name, maxElem)
 }
-func (f *fakeIPSet) CreateIPv6NetSet(name string, timeout uint32) error {
-	f.created[name] = true
-	return nil
+func (f *fakeIPSet) CreateIPv4NetSet(name string, timeout, maxElem uint32) error {
+	return f.create(name, maxElem)
+}
+func (f *fakeIPSet) CreateIPv6NetSet(name string, timeout, maxElem uint32) error {
+	return f.create(name, maxElem)
 }
 func (f *fakeIPSet) AddElement(set, ip string, ttl uint32) error {
 	if f.added[set] == nil {
@@ -151,6 +161,12 @@ func (f *fakeIPSet) AddElement(set, ip string, ttl uint32) error {
 func (f *fakeIPSet) RemoveElement(set, ip string) error {
 	delete(f.added[set], ip)
 	return nil
+}
+func (f *fakeIPSet) ListElements(set string) ([]string, error) {
+	if f.listErr != nil {
+		return nil, f.listErr
+	}
+	return f.existing[set], nil
 }
 
 func TestProcessAnswersPersistentAndStore(t *testing.T) {

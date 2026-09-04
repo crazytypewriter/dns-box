@@ -22,6 +22,9 @@ func NewServer(cfg *config.Config, handler *Handler) *Server {
 	}
 }
 
+// Start не блокирует: на каждый адрес поднимается своя горутина. Вызывать
+// через `go` не нужно — иначе Stop может обогнать s.wg.Add и не дождаться
+// остановки серверов.
 func (s *Server) Start(ctx context.Context) {
 	for _, addr := range s.cfg.Server.Address {
 		s.wg.Add(1)

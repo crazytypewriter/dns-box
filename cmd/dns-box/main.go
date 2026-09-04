@@ -9,6 +9,8 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
+	"runtime/debug"
 	"syscall"
 	"time"
 
@@ -23,10 +25,19 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
+// Значения подставляются при сборке через -ldflags "-X main.version=..."
+// (см. LDFLAGS в Makefile). version обязана совпадать с тегом релиза:
+// deploy/dns-box.init.d сравнивает вывод `dns-box -version` с tag_name из
+// GitHub API и без совпадения перекачивает бинарь на каждом рестарте.
+var (
+	version = "dev"
+	commit  = "none"
+	date    = "unknown"
+)
+
 var (
 	configPath  string
 	showVersion bool
-	version     = "dev" // задаётся при сборке через -ldflags "-X main.version=..."
 )
 
 func init() {
@@ -34,11 +45,44 @@ func init() {
 	flag.BoolVar(&showVersion, "version", false, "print version and exit")
 }
 
+// buildVersion возвращает версию, подставленную линковщиком, а при сборке
+// без -ldflags (`go build`, `go install`) достаёт что может из build info.
+func buildVersion() (ver, rev string) {
+	ver, rev = version, commit
+	info, ok := debug.ReadBuildInfo()
+	if !ok {
+		return ver, rev
+	}
+	if ver == "dev" && info.Main.Version != "" && info.Main.Version != "(devel)" {
+		ver = info.Main.Version
+	}
+	if rev == "none" {
+		for _, s := range info.Settings {
+			if s.Key == "vcs.revision" && s.Value != "" {
+				rev = s.Value
+				if len(rev) > 7 {
+					rev = rev[:7]
+				}
+			}
+		}
+	}
+	return ver, rev
+}
+
+// versionInfo печатает версию. Первая строка — "dns-box <version>": её
+// парсит init.d-скрипт как `head -n1 | awk '{print $NF}'`, так что версия
+// обязана оставаться последним полем первой строки.
+func versionInfo() string {
+	ver, rev := buildVersion()
+	return fmt.Sprintf("dns-box %s\ncommit: %s\nbuilt:  %s\ngo:     %s %s/%s\n",
+		ver, rev, date, runtime.Version(), runtime.GOOS, runtime.GOARCH)
+}
+
 func main() {
 	flag.Parse()
 
 	if showVersion {
-		fmt.Println(version)
+		fmt.Print(versionInfo())
 		os.Exit(0)
 	}
 
@@ -86,6 +130,9 @@ func run(ctx context.Context, configPath string, logOutput io.Writer) error {
 	l.SetFormatter(&log.TextFormatter{
 		ForceColors: true,
 	})
+
+	ver, rev := buildVersion()
+	l.Infof("dns-box %s (commit %s, built %s, %s %s/%s)", ver, rev, date, runtime.Version(), runtime.GOOS, runtime.GOARCH)
 
 	// Восстановление динамических списков из GitHub backup.
 	if cfg.GithubBackup.Enabled {
@@ -147,24 +194,24 @@ func run(ctx context.Context, configPath string, logOutput io.Writer) error {
 		}
 
 		if listCfg.MaxElem != 0 {
-			l.Warnf("maxelem %d for list %s is not supported by the ipset library yet, ignoring", listCfg.MaxElem, listCfg.Name)
+			l.Infof("List %s: maxelem %d (применяется только если сет создаётся сейчас; у существующего сета лимит не меняется)", listCfg.Name, listCfg.MaxElem)
 		}
 
 		l.Infof("Creating IPv4 set: %s", listCfg.Name)
-		if err := ipSet.CreateIPv4Set(listCfg.Name, timeout); err != nil {
+		if err := ipSet.CreateIPv4Set(listCfg.Name, timeout, listCfg.MaxElem); err != nil {
 			l.Errorf("Error creating IPv4 set %s: %v", listCfg.Name, err)
 			return err
 		}
-		l.Infof("IPv4 set %s created successfully.", listCfg.Name)
+		l.Infof("IPv4 set %s ready.", listCfg.Name)
 
 		if listCfg.EnableIPv6 {
 			ipv6Name := listCfg.Name + "6"
 			l.Infof("Creating IPv6 set: %s", ipv6Name)
-			if err := ipSet.CreateIPv6Set(ipv6Name, timeout); err != nil {
+			if err := ipSet.CreateIPv6Set(ipv6Name, timeout, listCfg.MaxElem); err != nil {
 				l.Errorf("Error creating IPv6 set %s: %v", ipv6Name, err)
 				return err
 			}
-			l.Infof("IPv6 set %s created successfully.", ipv6Name)
+			l.Infof("IPv6 set %s ready.", ipv6Name)
 		}
 	}
 
@@ -176,20 +223,20 @@ func run(ctx context.Context, configPath string, logOutput io.Writer) error {
 		}
 
 		l.Infof("Creating IPv4 net set: %s", netListCfg.Name)
-		if err := ipSet.CreateIPv4NetSet(netListCfg.Name, timeout); err != nil {
+		if err := ipSet.CreateIPv4NetSet(netListCfg.Name, timeout, netListCfg.MaxElem); err != nil {
 			l.Errorf("Error creating IPv4 net set %s: %v", netListCfg.Name, err)
 			return err
 		}
-		l.Infof("IPv4 net set %s created successfully.", netListCfg.Name)
+		l.Infof("IPv4 net set %s ready.", netListCfg.Name)
 
 		if netListCfg.EnableIPv6 {
 			ipv6Name := netListCfg.Name + "6"
 			l.Infof("Creating IPv6 net set: %s", ipv6Name)
-			if err := ipSet.CreateIPv6NetSet(ipv6Name, timeout); err != nil {
+			if err := ipSet.CreateIPv6NetSet(ipv6Name, timeout, netListCfg.MaxElem); err != nil {
 				l.Errorf("Error creating IPv6 net set %s: %v", ipv6Name, err)
 				return err
 			}
-			l.Infof("IPv6 net set %s created successfully.", ipv6Name)
+			l.Infof("IPv6 net set %s ready.", ipv6Name)
 		}
 	}
 
@@ -220,21 +267,9 @@ func run(ctx context.Context, configPath string, logOutput io.Writer) error {
 				}
 			}
 
-			now := time.Now().Unix()
-			restored := make(map[string]int)
-			for _, e := range entries {
-				if !validSets[e.Set] {
-					continue // сета больше нет в конфиге
-				}
-				remaining := ipsetstate.RemainingTTL(e, now)
-				if e.Expire != 0 && remaining == 0 {
-					continue // истекла за время простоя
-				}
-				if err := ipSet.AddElement(e.Set, e.IP, remaining); err != nil {
-					l.Warnf("Failed to restore %s in set %s: %v", e.IP, e.Set, err)
-					continue
-				}
-				restored[e.Set]++
+			restored, skipped := restoreEntries(entries, validSets, ipSet, l)
+			if skipped > 0 {
+				l.Infof("Skipped %d ipset entries already present in the kernel", skipped)
 			}
 			stateStore.Restore(entries)
 			for set, n := range restored {
@@ -282,11 +317,11 @@ func run(ctx context.Context, configPath string, logOutput io.Writer) error {
 	dnsHandler := dns.NewDnsHandler(cfg, dnsCache, domainCache, ipSet, blockList, listDomainCaches, stateStore, l)
 	dnsHandler.StartHostsReloader(ctx)
 	dnsServer := dns.NewServer(cfg, dnsHandler)
-	go dnsServer.Start(ctx)
+	dnsServer.Start(ctx)
 	l.Infof("DNS server started on %s", cfg.Server.Address[0])
 
 	apiServer := api.NewServer(cfg, dnsCache, domainCache, blockList, listDomainCaches, ipSet, stateStore, l)
-	go apiServer.Start(ctx, ":8090")
+	apiServer.Start(ctx, ":8090")
 
 	<-ctx.Done()
 
@@ -309,6 +344,52 @@ func run(ctx context.Context, configPath string, logOutput io.Writer) error {
 	apiServer.Stop(shutdownCtx)
 
 	return ctx.Err()
+}
+
+// restoreEntries заливает записи файла состояния обратно в ipset и
+// возвращает счётчики восстановленных по сетам и пропущенных.
+//
+// Записи, которые уже лежат в сете, пропускаются: при перезапуске
+// процесса (в отличие от ребута) сеты живы, и таймеры ядра точнее наших —
+// в том числе продлённые правилом -j SET --exist, которого файл состояния
+// не видит. Повторный Add укоротил бы им срок жизни.
+func restoreEntries(entries []ipsetstate.Entry, validSets map[string]bool, ipSet ipset.Manager, l *log.Logger) (map[string]int, int) {
+	present := make(map[string]map[string]bool, len(validSets))
+	for set := range validSets {
+		ips, err := ipSet.ListElements(set)
+		if err != nil {
+			l.Debugf("Cannot list ipset %s (%v), restoring all entries for it", set, err)
+			continue
+		}
+		inSet := make(map[string]bool, len(ips))
+		for _, ip := range ips {
+			inSet[ip] = true
+		}
+		present[set] = inSet
+	}
+
+	now := time.Now().Unix()
+	restored := make(map[string]int)
+	skipped := 0
+	for _, e := range entries {
+		if !validSets[e.Set] {
+			continue // сета больше нет в конфиге
+		}
+		if present[e.Set][e.IP] {
+			skipped++
+			continue // уже в сете, таймер ядра оставляем как есть
+		}
+		remaining := ipsetstate.RemainingTTL(e, now)
+		if e.Expire != 0 && remaining == 0 {
+			continue // истекла за время простоя
+		}
+		if err := ipSet.AddElement(e.Set, e.IP, remaining); err != nil {
+			l.Warnf("Failed to restore %s in set %s: %v", e.IP, e.Set, err)
+			continue
+		}
+		restored[e.Set]++
+	}
+	return restored, skipped
 }
 
 // reconcileNetLists передобавляет все CIDR из net_lists в соответствующие

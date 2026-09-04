@@ -1,8 +1,10 @@
-# Бинарные артефакты сборки
-dns-box
-dns-box-aarch64
-dns-box-local
-dns-box-test
+# Бинарные артефакты сборки.
+# Ведущий слэш обязателен: голый "dns-box" матчит любой компонент пути,
+# то есть игнорирует и каталог с исходниками cmd/dns-box/.
+/dns-box
+/dns-box-aarch64
+/dns-box-local
+/dns-box-test
 *.exe
 *.test
 *.out

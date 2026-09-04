@@ -57,35 +57,24 @@ jobs:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     needs: test
     runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
       - name: Check out code
         uses: actions/checkout@v4
 
-      - name: Download binary artifact
-        uses: actions/download-artifact@v4
+      - name: Set up Go
+        uses: actions/setup-go@v5
         with:
-          name: dns-box-arm
+          go-version-file: './go.mod'
+          cache: true
 
-      - name: Make binary executable
-        run: chmod +x dns-box
-
-      - name: Install UPX
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y upx
-
-      - name: Compress binary with UPX
-        run: upx --best --lzma ./dns-box
-
-      - name: Install GitHub CLI
-        run: sudo apt-get install -y gh
-
-      - name: Authenticate GitHub CLI
-        run: |
-          echo "${{ secrets.GITHUB_TOKEN }}" | gh auth login --with-token
-          gh auth status
-
-      - name: Create release with incremented tag
+      # Тег считаем ДО сборки: версия зашивается в бинарь через -ldflags, а
+      # init.d на роутере сравнивает `dns-box -version` с tag_name релиза.
+      # Если собрать раньше, чем известен тег, версии не совпадут и роутер
+      # будет перекачивать бинарь на каждом рестарте.
+      - name: Compute next tag
+        id: tag
         run: |
           LATEST_TAG=$(gh release list --limit 1 --json tagName --jq '.[0].tagName')
 
@@ -99,6 +88,30 @@ jobs:
             NEW_TAG="v${MAJOR}.${MINOR}.${PATCH}"
           fi
 
+          echo "new_tag=$NEW_TAG" >> "$GITHUB_OUTPUT"
+          echo "Releasing $NEW_TAG"
+
+      - name: Build ARM binary with release version
+        run: make arm-build VERSION=${{ steps.tag.outputs.new_tag }}
+
+      # Страховка от молча сломанных ldflags: без неё роутер узнает о
+      # проблеме только по бесконечным перезакачкам.
+      - name: Verify version is baked in
+        run: |
+          LC_ALL=C grep -aq "${{ steps.tag.outputs.new_tag }}" dns-box \
+            || { echo "version ${{ steps.tag.outputs.new_tag }} not found in binary"; exit 1; }
+
+      - name: Install UPX
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y upx
+
+      - name: Compress binary with UPX
+        run: upx --best --lzma ./dns-box
+
+      - name: Create release
+        run: |
+          NEW_TAG="${{ steps.tag.outputs.new_tag }}"
           COMMIT_HASH=$(git rev-parse --short HEAD)
 
           gh release create "$NEW_TAG" \

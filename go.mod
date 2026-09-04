@@ -4,7 +4,7 @@ go 1.27.1
 
 require (
 	github.com/VictoriaMetrics/fastcache v1.13.0
-	github.com/crazytypewriter/ipset v0.1.1-0.20260502173102-9baa97cc550e
+	github.com/crazytypewriter/ipset v0.1.1-0.20260904125125-99a675cabfed
 	github.com/google/go-github/v62 v62.0.0
 	github.com/miekg/dns v1.1.68
 	github.com/sirupsen/logrus v1.9.3

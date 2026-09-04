@@ -8,19 +8,19 @@ func New() (*IPSet, error) {
 	return &IPSet{}, nil
 }
 
-func (i *IPSet) CreateIPv4Set(name string, timeout uint32) error {
+func (i *IPSet) CreateIPv4Set(name string, timeout, maxElem uint32) error {
 	return nil
 }
 
-func (i *IPSet) CreateIPv6Set(name string, timeout uint32) error {
+func (i *IPSet) CreateIPv6Set(name string, timeout, maxElem uint32) error {
 	return nil
 }
 
-func (i *IPSet) CreateIPv4NetSet(name string, timeout uint32) error {
+func (i *IPSet) CreateIPv4NetSet(name string, timeout, maxElem uint32) error {
 	return nil
 }
 
-func (i *IPSet) CreateIPv6NetSet(name string, timeout uint32) error {
+func (i *IPSet) CreateIPv6NetSet(name string, timeout, maxElem uint32) error {
 	return nil
 }
 
@@ -30,4 +30,8 @@ func (i *IPSet) RemoveElement(setName, ip string) error {
 
 func (i *IPSet) AddElement(setName, ip string, ttl uint32) error {
 	return nil
+}
+
+func (i *IPSet) ListElements(setName string) ([]string, error) {
+	return nil, nil
 }

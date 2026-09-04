@@ -27,6 +27,16 @@ func TestBlocklistE2E(t *testing.T) {
 
 	tmpDir := t.TempDir()
 
+	// Локальный blocklist вместо загрузки по сети: updateLists читает
+	// источники без схемы http(s):// как файлы. Тест остаётся герметичным
+	// и не зависит ни от доступности GitHub, ни от содержимого чужого списка.
+	blocklistPath := filepath.Join(tmpDir, "blocklist.txt")
+	require.NoError(t, os.WriteFile(blocklistPath, []byte(
+		"# тестовый список в hosts-формате\n"+
+			"\n"+
+			"0.0.0.0 mc.yandex.ru\n"+
+			"0.0.0.0 ads.example.com\n"), 0600))
+
 	// Создание временного файла конфигурации
 	testPort := 53531
 	cfg := config.Config{
@@ -39,7 +49,7 @@ func TestBlocklistE2E(t *testing.T) {
 		},
 		BlockList: config.BlockListConfig{
 			Enabled: true, // без этого флага blocklist не стартует
-			URLs:    []string{"https://blocklistproject.github.io/Lists/tracking.txt"},
+			URLs:    []string{blocklistPath},
 		},
 	}
 	configPath := filepath.Join(tmpDir, "test_config.json")

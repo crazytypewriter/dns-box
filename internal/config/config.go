@@ -48,7 +48,7 @@ type IPSetListConfig struct {
 	Timeout    uint32      `json:"timeout"`    // in seconds, 0 means use default
 	Persistent bool        `json:"persistent"` // записи без срока жизни (timeout 0)
 	Prefetch   bool        `json:"prefetch"`   // префетч доменов этого списка у границы TTL
-	MaxElem    uint32      `json:"maxelem"`    // пока не поддерживается либой, см. спеку §7
+	MaxElem    uint32      `json:"maxelem"`    // 0 — дефолт ядра (65536); применяется только при создании сета
 	Rules      RulesConfig `json:"rules"`
 }
 
@@ -65,6 +65,9 @@ type NetListConfig struct {
 	Timeout    uint32   `json:"timeout"`
 	ASN        string   `json:"asn,omitempty"`
 	CIDRs      []string `json:"cidr"`
+	// MaxElem — 0 значит дефолт ядра (65536); применяется только при
+	// создании сета. Крупным ASN-спискам его стоит поднимать.
+	MaxElem uint32 `json:"maxelem"`
 	// Persistent — записи без срока жизни. Указатель, чтобы отличить
 	// «не задано» от явного false: дефолт для net_lists — true.
 	Persistent *bool `json:"persistent"`

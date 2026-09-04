@@ -427,14 +427,40 @@ func isUsableRcode(rcode int) bool {
 	return rcode == dns.RcodeSuccess || rcode == dns.RcodeNameError
 }
 
+// isEncryptedScheme сообщает, шифруется ли трафик до upstream. Открытые
+// схемы (tcp/udp, а также любые неизвестные) видны провайдеру и DPI.
+func isEncryptedScheme(scheme string) bool {
+	switch scheme {
+	case "https", "doh", "tls", "dot":
+		return true
+	}
+	return false
+}
+
 // queryUpstreams отправляет запрос upstream-серверам с failover и параллельной
 // гонкой: запросы стартуют со сдвигом (stagger), первый валидный ответ
 // выигрывает, остальные отменяются. Если все серверы не дали валидного
 // ответа — возвращает nil (клиенту будет отдан SERVFAIL).
+//
+// Открытые upstream'ы (tcp/udp) идут отдельной, второй волной. В общей гонке
+// имя запрашиваемого домена уходило бы в сеть открытым текстом на каждом
+// запросе — даже когда DoH отвечает первым и его ответ выигрывает: гонку
+// выигрывает ответ, но утечка к этому моменту уже произошла. Вторая волна
+// стартует, только когда шифрованные upstream'ы кончились (все вернули
+// ошибку) или когда истёк dns.timeout — то есть шифрованный upstream завис.
 func (h *Handler) queryUpstreams(m *dns.Msg, domain string, servers []string) *dns.Msg {
 	sorted := h.sortServers(servers)
 	if len(sorted) == 0 {
 		return nil
+	}
+
+	var encrypted, plain []string
+	for _, ns := range sorted {
+		if isEncryptedScheme(h.getScheme(ns)) {
+			encrypted = append(encrypted, ns)
+		} else {
+			plain = append(plain, ns)
+		}
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -471,27 +497,78 @@ func (h *Handler) queryUpstreams(m *dns.Msg, domain string, servers []string) *d
 		}()
 	}
 
-	// Первый upstream опрашиваем сразу, остальные подключаются с задержкой,
-	// чтобы не грузить все серверы при живом приоритетном.
-	for i, ns := range sorted {
-		if i == 0 {
-			launch(ns)
-			continue
+	// Таймеры отложенных запусков гасим на выходе, чтобы не будить
+	// планировщик уже после того, как ответ отдан.
+	var timers []*time.Timer
+	defer func() {
+		for _, t := range timers {
+			t.Stop()
 		}
-		delay := time.Duration(i) * 300 * time.Millisecond
-		if delay > 900*time.Millisecond {
-			delay = 900 * time.Millisecond
+	}()
+
+	// launchWave: первый upstream волны опрашиваем сразу, остальные
+	// подключаются с задержкой, чтобы не грузить все серверы при живом
+	// приоритетном. Вызывается только из главной горутины — иначе гонка
+	// на timers.
+	launchWave := func(group []string) {
+		for i, ns := range group {
+			if i == 0 {
+				launch(ns)
+				continue
+			}
+			delay := time.Duration(i) * 300 * time.Millisecond
+			if delay > 900*time.Millisecond {
+				delay = 900 * time.Millisecond
+			}
+			timers = append(timers, time.AfterFunc(delay, func() { launch(ns) }))
 		}
-		time.AfterFunc(delay, func() { launch(ns) })
+	}
+
+	launchWave(encrypted)
+
+	// pending — сколько upstream'ов реально запущено: пока вторая волна не
+	// стартовала, её серверы в счётчике отказов не участвуют.
+	pending := len(encrypted)
+	plainStarted := false
+	startPlain := func() {
+		if plainStarted || len(plain) == 0 {
+			return
+		}
+		if len(encrypted) > 0 {
+			h.log.Debugf("Encrypted upstreams exhausted for %s, falling back to plaintext: %v", domain, plain)
+		}
+		launchWave(plain)
+		plainStarted = true
+		pending = len(sorted)
+	}
+
+	// Нет шифрованных upstream'ов — открытые стартуют сразу, ждать нечего.
+	if len(encrypted) == 0 {
+		startPlain()
+	}
+
+	var fallback <-chan time.Time
+	if !plainStarted && len(plain) > 0 {
+		t := time.NewTimer(h.timeout)
+		defer t.Stop()
+		fallback = t.C
 	}
 
 	failed := 0
-	for failed < len(sorted) {
+	for failed < pending {
 		select {
 		case resp := <-resCh:
 			return resp
 		case <-failCh:
 			failed++
+			if !plainStarted && failed == len(encrypted) {
+				startPlain()
+				fallback = nil
+			}
+		case <-fallback:
+			h.log.Debugf("Encrypted upstreams timed out for %s, falling back to plaintext: %v", domain, plain)
+			startPlain()
+			fallback = nil
 		}
 	}
 	return nil

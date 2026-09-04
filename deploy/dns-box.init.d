@@ -9,8 +9,8 @@ USE_PROCD=1
 TMPDIR=/tmp/dns-box
 PROG=${TMPDIR}/dns-box
 CONF=/data/dns-box/config.json
-BIN_URL="https://github.com/crazytypewriter/rd15tool/releases/latest/download/dns-box"
-API_URL="https://api.github.com/repos/crazytypewriter/rd15tool/releases/latest"
+BIN_URL="https://github.com/crazytypewriter/dns-box/releases/latest/download/dns-box"
+API_URL="https://api.github.com/repos/crazytypewriter/dns-box/releases/latest"
 VER_FILE=${TMPDIR}/version.txt
 
 wait_for_tmp() {

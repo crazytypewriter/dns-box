@@ -27,11 +27,24 @@ setRights:
 restart:
 	ssh be /etc/init.d/$(PACKAGE_NAME) restart
 
+# VERSION должна совпадать с тегом релиза: init.d-скрипт на роутере
+# сравнивает `dns-box -version` с tag_name из GitHub API. В CI её передают
+# явно (make arm-build VERSION=v1.2.3), локально берём из git.
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
-LDFLAGS := -s -w -X main.version=$(VERSION)
+COMMIT ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo "none")
+DATE ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
+LDFLAGS := -s -w -X main.version=$(VERSION) -X main.commit=$(COMMIT) -X main.date=$(DATE)
 
 arm-build:
 	GOOS=linux GOARCH=arm GOMIPS=softfloat $(GO) build -ldflags "$(LDFLAGS)" -o $(PACKAGE_NAME) ./cmd/dns-box/main.go
+
+# Сборка под текущую платформу — с теми же ldflags, чтобы `-version`
+# работал и локально.
+local-build:
+	$(GO) build -ldflags "$(LDFLAGS)" -o $(PACKAGE_NAME)-local ./cmd/dns-box
+
+version:
+	@echo $(VERSION)
 
 test:
 	$(GO) test ./...
@@ -40,4 +53,4 @@ clean:
 	rm -rf $(OUTPUT_DIR) *.so *.a *.h
 
 
-.PHONY: all build arm-build pack copy test clean
+.PHONY: all build arm-build local-build pack copy test clean version
