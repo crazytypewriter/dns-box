@@ -54,13 +54,43 @@ func NewClient(token string) *Client {
 }
 
 // SaveFile creates or updates a file in a GitHub repository.
+// При конфликте (409 — SHA устарел, например после параллельного обновления)
+// перечитывает SHA и повторяет попытку до 3 раз.
 func (c *Client) SaveFile(ctx context.Context, owner, repo, path, branch string, content []byte) error {
-	log.Printf("[github] SaveFile START: %s/%s/%s (branch=%s)", owner, repo, path, branch)
+	const attempts = 3
 
-	ctx, cancel := context.WithTimeout(ctx, defaultTimeout)
+	ctx, cancel := context.WithTimeout(ctx, defaultTimeout*attempts)
 	defer cancel()
 
-	log.Printf("[github] Calling GetContents...")
+	var lastErr error
+	for attempt := 1; attempt <= attempts; attempt++ {
+		lastErr = c.saveFileAttempt(ctx, owner, repo, path, branch, content)
+		if lastErr == nil {
+			log.Printf("[github] SaveFile success (attempt %d)", attempt)
+			return nil
+		}
+		if !isConflict(lastErr) {
+			log.Printf("[github] SaveFile error: %v", lastErr)
+			return lastErr
+		}
+		log.Printf("[github] SaveFile conflict (409), retrying %d/%d: %v", attempt, attempts, lastErr)
+	}
+	log.Printf("[github] SaveFile failed after %d attempts: %v", attempts, lastErr)
+	return lastErr
+}
+
+// isConflict распознаёт 409 Conflict от Contents API (устаревший blob SHA).
+func isConflict(err error) bool {
+	var ghErr *github.ErrorResponse
+	if errors.As(err, &ghErr) {
+		return ghErr.Response != nil && ghErr.Response.StatusCode == http.StatusConflict
+	}
+	return false
+}
+
+func (c *Client) saveFileAttempt(ctx context.Context, owner, repo, path, branch string, content []byte) error {
+	log.Printf("[github] SaveFile attempt: %s/%s/%s (branch=%s)", owner, repo, path, branch)
+
 	opts := &github.RepositoryContentGetOptions{Ref: branch}
 	fileContent, _, _, err := c.client.Repositories.GetContents(ctx, owner, repo, path, opts)
 	if err != nil {
@@ -90,12 +120,6 @@ func (c *Client) SaveFile(ctx context.Context, owner, repo, path, branch string,
 			Content: content,
 			Branch:  github.String(branch),
 		})
-	}
-
-	if err != nil {
-		log.Printf("[github] SaveFile error: %v", err)
-	} else {
-		log.Printf("[github] SaveFile success")
 	}
 
 	return err

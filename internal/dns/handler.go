@@ -151,6 +151,16 @@ func (h *Handler) ServeDNS(w dns.ResponseWriter, r *dns.Msg) {
 		}
 	}
 
+	// Для UDP ответ не должен превышать буфер клиента (EDNS или 512 байт):
+	// при переполнении обрезаем и ставим TC=1, клиент переспросит по TCP.
+	if _, isUDP := w.RemoteAddr().(*net.UDPAddr); isUDP {
+		size := 512
+		if edns := r.IsEdns0(); edns != nil && int(edns.UDPSize()) > size {
+			size = int(edns.UDPSize())
+		}
+		msg.Truncate(size)
+	}
+
 	if err := w.WriteMsg(msg); err != nil {
 		h.log.Errorf("Failed to write response: %v", err)
 	}

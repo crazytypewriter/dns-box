@@ -2,7 +2,9 @@ package api
 
 import (
 	"context"
+	"crypto/subtle"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -49,7 +51,7 @@ func (s *Server) Start(ctx context.Context, addr string) {
 
 	srv := &http.Server{
 		Addr:    addr,
-		Handler: handlers.Routes(),
+		Handler: withAuth(s.cfg, handlers.Routes()),
 	}
 	s.mu.Lock()
 	s.httpServer = srv
@@ -61,6 +63,25 @@ func (s *Server) Start(ctx context.Context, addr string) {
 			s.log.Errorf("API server on %s stopped: %v", addr, err)
 		}
 	}()
+}
+
+// withAuth требует Bearer-токен, если он задан (env DNS_BOX_API_TOKEN
+// или поле api.token). Без токена API работает как раньше — это осознанный
+// выбор для сетей, где :8090 доступен только из LAN.
+func withAuth(cfg *config.Config, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		token := cfg.API.GetToken()
+		if token == "" {
+			next.ServeHTTP(w, r)
+			return
+		}
+		got := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+		if subtle.ConstantTimeCompare([]byte(got), []byte(token)) != 1 {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 func (s *Server) Stop(ctx context.Context) {

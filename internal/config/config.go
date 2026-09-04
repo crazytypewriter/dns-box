@@ -111,6 +111,24 @@ type BlockListConfig struct {
 	RefreshHours int      `json:"refresh_hours"`
 }
 
+// APIConfig — HTTP-управление. Address по умолчанию ":8090".
+// Токен: приоритет у переменной окружения DNS_BOX_API_TOKEN,
+// поле token — фолбэк (лучше держать пустым и использовать env).
+type APIConfig struct {
+	Address string `json:"address"`
+	Token   string `json:"token"`
+}
+
+const APITokenEnv = "DNS_BOX_API_TOKEN"
+
+// GetToken возвращает токен API: приоритет у переменной окружения.
+func (a APIConfig) GetToken() string {
+	if token := os.Getenv(APITokenEnv); token != "" {
+		return token
+	}
+	return a.Token
+}
+
 type Config struct {
 	Server       ServerConfig    `json:"server"`
 	DNS          DNSConfig       `json:"dns"`
@@ -119,6 +137,7 @@ type Config struct {
 	BlockList    BlockListConfig `json:"blocklist"`
 	GithubBackup GithubConfig    `json:"github_backup"`
 	State        StateConfig     `json:"state"`
+	API          APIConfig       `json:"api"`
 	mu           sync.RWMutex    `json:"-"`
 	Path         string          `json:"-"`
 }
@@ -263,6 +282,9 @@ func normalizeSlices(c *Config) {
 	}
 	if c.State.MaxEntriesPerSet <= 0 {
 		c.State.MaxEntriesPerSet = 20000
+	}
+	if c.API.Address == "" {
+		c.API.Address = ":8090"
 	}
 }
 
@@ -410,6 +432,7 @@ func (c *Config) SaveConfig() error {
 	staticServer := c.Server
 	staticDNS := c.DNS
 	staticGithubBackup := c.GithubBackup
+	staticAPI := c.API
 
 	file, err := os.Open(c.Path)
 	if err == nil {
@@ -421,6 +444,7 @@ func (c *Config) SaveConfig() error {
 			BlockList    BlockListConfig `json:"blocklist"`
 			Rules        RulesConfig     `json:"rules"`
 			State        StateConfig     `json:"state"`
+			API          APIConfig       `json:"api"`
 		}
 		decodeErr := json.NewDecoder(file).Decode(&tempConfig)
 		file.Close()
@@ -428,6 +452,7 @@ func (c *Config) SaveConfig() error {
 			staticServer = tempConfig.Server
 			staticDNS = tempConfig.DNS
 			staticGithubBackup = tempConfig.GithubBackup
+			staticAPI = tempConfig.API
 		} else {
 			log.Printf("[config] Warning: failed to decode existing config (%v), using in-memory static values", decodeErr)
 		}
@@ -450,6 +475,7 @@ func (c *Config) SaveConfig() error {
 		Rules        RulesConfig     `json:"rules"`
 		BlockList    BlockListConfig `json:"blocklist"`
 		State        StateConfig     `json:"state"`
+		API          APIConfig       `json:"api"`
 	}{
 		Server:       staticServer,
 		DNS:          staticDNS,
@@ -458,6 +484,7 @@ func (c *Config) SaveConfig() error {
 		Rules:        cfgCopy.Rules,
 		BlockList:    cfgCopy.BlockList,
 		State:        cfgCopy.State,
+		API:          staticAPI,
 	}
 
 	// Ротируем локальные бэкапы перед записью.

@@ -439,7 +439,16 @@ sudo systemctl status dns-box
 
 ## HTTP API
 
-API доступен на порту `8090`.
+API доступен на порту `8090`. Адрес настраивается в `api.address`, доступ можно закрыть bearer-токеном:
+
+```json
+"api": {
+  "address": "127.0.0.1:8090",
+  "token": ""
+}
+```
+
+Токен лучше не хранить в конфиге, а задавать переменной окружения `DNS_BOX_API_TOKEN` (она приоритетнее поля `token`). Если токен задан, все запросы должны нести заголовок `Authorization: Bearer <token>`.
 
 ### Управление доменами
 
@@ -628,6 +637,40 @@ curl -X DELETE http://localhost:8090/blocklist/urls \
 ```
 
 ---
+
+### Управление статическими CIDR (net_lists)
+
+#### Получить все net_lists
+
+```bash
+curl http://localhost:8090/ipset/net_lists
+```
+
+**Ответ:**
+```json
+[{"name":"vpn_subnets","enable_ipv6":true,"timeout":7200,"asn":"","cidr":["91.108.56.0/22"],"persistent":null,"refresh_minutes":null}]
+```
+
+#### Получить CIDR конкретного списка
+
+```bash
+curl http://localhost:8090/ipset/net/vpn_subnets/cidrs
+```
+
+#### Добавить CIDR
+
+```bash
+curl -X POST http://localhost:8090/ipset/net/vpn_subnets/cidrs   -d "149.154.160.0/20
+2a0a:f280::/32"
+```
+
+IPv6-CIDR автоматически попадают в сет `vpn_subnets6` (если у списка `enable_ipv6: true`). Записи добавляются в ipset сразу; для persistent-списков — без срока жизни.
+
+#### Удалить CIDR
+
+```bash
+curl -X DELETE http://localhost:8090/ipset/net/vpn_subnets/cidrs   -d "149.154.160.0/20"
+```
 
 ## Интеграция с ipset
 

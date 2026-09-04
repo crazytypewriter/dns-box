@@ -34,16 +34,14 @@ func (c *DomainCache) Contains(domain string) bool {
 	return c.cache.Has([]byte(domain))
 }
 
+// ContainsSuffix проверяет точное совпадение суффикса. Обрезка до двух
+// меток здесь запрещена: вызывающий код (shouldProcess/isDomainInList)
+// сам перебирает суффиксы от полного имени к короткому, повторная обрезка
+// ломала суффиксы длиннее двух меток (.scontent.cdninstagram.com) и,
+// наоборот, матчила лишнее (.foo.googlevideo.com -> .googlevideo.com).
 func (c *DomainCache) ContainsSuffix(domain string) bool {
-	parts := strings.Split(domain, ".")
-
-	if len(parts) > 2 {
-		domain = strings.Join(parts[len(parts)-2:], ".")
-	}
-
 	if !strings.HasPrefix(domain, ".") {
 		domain = "." + domain
 	}
-
 	return c.cache.Has([]byte(domain))
 }

@@ -27,17 +27,20 @@ func NewServer(cfg *config.Config, handler *Handler) *Server {
 // остановки серверов.
 func (s *Server) Start(ctx context.Context) {
 	for _, addr := range s.cfg.Server.Address {
-		s.wg.Add(1)
-		go s.startServer(ctx, addr)
+		// UDP и TCP на каждом адресе: при TC=1 клиент уходит в TCP,
+		// там его раньше ждал refused
+		s.wg.Add(2)
+		go s.startServer(ctx, addr, "udp")
+		go s.startServer(ctx, addr, "tcp")
 	}
 }
 
-func (s *Server) startServer(ctx context.Context, addr string) {
+func (s *Server) startServer(ctx context.Context, addr, net string) {
 	defer s.wg.Done()
 
 	server := &dns.Server{
 		Addr:      addr,
-		Net:       "udp",
+		Net:       net,
 		ReusePort: true,
 		Handler:   s.handler,
 	}
@@ -48,7 +51,7 @@ func (s *Server) startServer(ctx context.Context, addr string) {
 	}()
 
 	if err := server.ListenAndServe(); err != nil {
-		fmt.Printf("DNS server error on %s: %v\n", addr, err)
+		fmt.Printf("DNS server error on %s (%s): %v\n", addr, net, err)
 	}
 }
 
