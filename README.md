@@ -1,6 +1,6 @@
 # dns-box
 
-[![Go Version](https://img.shields.io/badge/go-1.25.3-blue)](https://go.dev/)
+[![Go Version](https://img.shields.io/badge/go-1.27-blue)](https://go.dev/)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
 Высокопроизводительный DNS-сервер на Go с поддержкой маршрутизации через VPN, блокировки рекламы и автоматического резервного копирования конфигурации в GitHub.
@@ -33,7 +33,11 @@
 - **HTTP API** для управления доменами, суффиксами и блоклистами
 - **Резервное копирование конфигурации в GitHub** - ваши правила не потеряются
 - **Автоматическое восстановление** - при пустом локальном конфиге домены загружаются из GitHub
-- **Приоритизация upstream-серверов** - DoH/DoT используются в первую очередь, plain DNS как fallback
+- **Приоритизация upstream-серверов** - шифрованные (DoH/DoT) гоняются первыми, открытые подключаются только когда те не ответили
+- **Локальные переопределения** - hosts-файл с горячей перечиткой
+- **Rate limiting** - token bucket по клиентскому IP
+- **Защита от DNS rebinding** - вырезание приватных адресов из ответов
+- **Восстановление ipset после ребута** - файл-зеркало записей
 
 ---
 
@@ -78,14 +82,14 @@
 
 ### Требования
 
-- Go 1.25.3 или выше
+- Go 1.27 или выше (см. `go` в `go.mod`)
 - Linux (для работы ipset)
 - Права root или CAP_NET_ADMIN для работы с ipset
 
 ### Клонирование
 
 ```bash
-git clone https://github.com/your-username/dns-box.git
+git clone https://github.com/crazytypewriter/dns-box.git
 cd dns-box
 ```
 
@@ -119,6 +123,32 @@ make arm-build VERSION=v1.2.3
 передаёт его в `make arm-build VERSION=...`, а первая строка вывода обязана
 оставаться в формате `dns-box <версия>` (версия — последнее поле).
 
+### Установка на OpenWrt
+
+`deploy/dns-box.init.d` — procd-скрипт для OpenWrt: кладётся в
+`/etc/init.d/dns-box`, бинарь живёт в `/tmp/dns-box/dns-box`, конфиг — в
+`/data/dns-box/config.json` (`/tmp` на роутере очищается при ребуте, `/data`
+переживает).
+
+```bash
+scp deploy/dns-box.init.d root@router:/etc/init.d/dns-box
+ssh root@router chmod +x /etc/init.d/dns-box
+ssh root@router /etc/init.d/dns-box enable
+ssh root@router /etc/init.d/dns-box start
+```
+
+При `AUTO_UPDATE=1` скрипт перед стартом сравнивает первую строку
+`dns-box -version` с `tag_name` последнего релиза и при расхождении скачивает
+свежий бинарь. При `AUTO_UPDATE=0` (дефолт) он не качает ничего — а так как
+бинарь лежит в `/tmp`, после ребута его там не будет и сервис просто не
+поднимется. С нулём его нужно доставлять самому (`make copyToRouter`), либо
+ставить `AUTO_UPDATE=1`, либо перенести `PROG` в `/data`.
+
+Если включён `github_backup`, токен придётся прописать в самом init-скрипте:
+`procd_set_param env DNS_BOX_GITHUB_TOKEN=...` подхватывает переменную из
+окружения скрипта, а procd запускает его с пустым окружением. Без токена
+`Validate()` завалит старт.
+
 ---
 
 ## Конфигурация
@@ -137,7 +167,11 @@ make arm-build VERSION=v1.2.3
       "tls://1.1.1.1",
       "8.8.8.8:53"
     ],
-    "cache_ttl": 3600
+    "timeout": 5,
+    "rate_limit": 0,
+    "block_private": false,
+    "hosts_file": "",
+    "forward_zones": []
   },
   "ipset": {
     "lists": [
@@ -189,8 +223,12 @@ make arm-build VERSION=v1.2.3
 
 | Параметр | Тип | Описание |
 |----------|-----|----------|
-| `upstream_servers` | `[]string` | Список upstream DNS-серверов с приоритетом |
-| `cache_ttl` | `int` | Время жизни кеша в секундах (по умолчанию) |
+| `upstream_servers` | `[]string` | Список upstream DNS-серверов (порядок в конфиге не важен, приоритет — по схеме, см. ниже) |
+| `timeout` | `int` | Таймаут одного upstream в секундах, дефолт `5`. Он же — TTL отрицательного кеша, когда NXDOMAIN пришёл без SOA, и он же — момент запуска открытых upstream'ов |
+| `forward_zones` | `[]object` | Условная пересылка: `{"domain_suffix": ".corp.local", "servers": ["192.168.1.1"]}`. Для домена выбирается самая специфичная зона, её серверы полностью заменяют глобальные |
+| `hosts_file` | `string` | Путь к файлу в формате `/etc/hosts` для локальных переопределений A/AAAA. Пусто — выключено. Перечитывается по mtime раз в минуту, имеет приоритет выше блоклиста и кеша |
+| `rate_limit` | `int` | Лимит запросов в секунду с одного IP, `0` — без ограничений. Превышение → `REFUSED`. Burst не опускается ниже 10, чтобы `rate_limit: 1` не рубил нормальные всплески |
+| `block_private` | `bool` | Защита от DNS rebinding: вырезать приватные адреса (RFC 1918/4193, loopback, link-local) из ответов |
 
 **Поддерживаемые протоколы upstream:**
 
@@ -356,6 +394,8 @@ table inet mangle {
 | `branch` | `string` | Ветка репозитория |
 
 > **Получение токена:** Settings → Developer settings → Personal access tokens → Generate new token → выбрать scope `repo`.
+
+> **Токен лучше держать не в конфиге.** Переменная окружения `DNS_BOX_GITHUB_TOKEN` имеет приоритет над полем `token`, а `config.json` уезжает в бэкап и в бэкапы-ротации. Учтите: при `github_backup.enabled: true` токен обязателен — без него `Validate()` роняет старт, и сервис на роутере не поднимется.
 
 ---
 
@@ -831,7 +871,7 @@ DNS-ответы с `NXDOMAIN` (домен не существует) кешир
 ### Локальная сборка
 
 ```bash
-make build
+make local-build
 ```
 
 ### Кросс-компиляция для ARM
@@ -841,6 +881,10 @@ make arm-build
 ```
 
 Собирает бинарник для Linux ARM с softfloat (для роутеров и embedded-устройств).
+
+> **Осторожно:** `make build` и `make all` — это не сборка, а полный цикл
+> деплоя на роутер автора (см. «Полный цикл» ниже). Для сборки — `local-build`
+> или `arm-build`.
 
 ### Сжатие бинарника (UPX)
 
@@ -883,7 +927,17 @@ make all
 make test
 # или
 go test ./...
+
+# гонки — часть кода работает в нескольких горутинах
+go test -race ./...
+
+# один пакет / один тест
+go test ./internal/config/ -run TestSaveConfigKeepsListsNotNull -v
 ```
+
+Тесты не ходят в сеть: блоклисты и upstream'ы поднимаются локально
+(`httptest`, локальный DNS-сервер на 127.0.0.1), поэтому набор проходит
+офлайн и не зависит от содержимого чужих блоклистов.
 
 ### Тестирование DNS-сервера
 
@@ -932,18 +986,30 @@ dns-box/
 │   ├── config/
 │   │   └── config.go            # Загрузка, сохранение, мутации конфига
 │   ├── dns/
-│   │   ├── server.go            # DNS сервер (UDP/TCP)
-│   │   └── handler.go           # Обработка DNS-запросов, резолвинг, ipset
+│   │   ├── server.go            # DNS сервер (UDP)
+│   │   ├── handler.go           # Резолвинг, две волны upstream'ов, ipset
+│   │   ├── hosts.go             # Локальные переопределения из hosts-файла
+│   │   └── ratelimit.go         # Token bucket по клиентскому IP
 │   ├── github/
 │   │   └── client.go            # GitHub API клиент (загрузка/сохранение)
-│   └── ipset/
-│       └── ipset.go             # Обёртка над Linux ipset (только Linux)
+│   ├── ipset/
+│   │   ├── manager.go           # Интерфейс Manager (для подмены в тестах)
+│   │   ├── ipset.go             # Обёртка над Linux ipset (//go:build linux)
+│   │   └── ipset_stub.go        # No-op заглушка (//go:build !linux)
+│   └── ipsetstate/
+│       └── ipsetstate.go        # Файл-зеркало ipset для восстановления
+├── deploy/
+│   └── dns-box.init.d           # procd-скрипт для OpenWrt
+├── .github/workflows/test.yml   # CI: тесты + автоматический релиз
 ├── config.json                  # Пример конфигурации
 ├── Makefile                     # Сборка и деплой
 ├── go.mod                       # Go модули
 ├── go.sum                       # Контрольные суммы зависимостей
 └── README.md                    # Документация
 ```
+
+> Любой новый метод `ipset` нужно добавлять и в `ipset.go`, и в
+> `ipset_stub.go` — иначе сборка под non-Linux ломается.
 
 ---
 
@@ -962,6 +1028,7 @@ dns-box/
 ### Примеры логов
 
 ```
+INFO[0000] dns-box v1.0.15 (commit a1b2c3d, built 2026-01-01T00:00:00Z, go1.27.1 linux/arm)
 INFO[0000] DNS server started on 127.0.0.1:953
 INFO[0000] Local config has no domains. Attempting to load from GitHub...
 INFO[0000] Loaded 15 domains and 8 suffixes from GitHub
