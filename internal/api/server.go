@@ -9,6 +9,7 @@ import (
 	"github.com/crazytypewriter/dns-box/internal/cache"
 	"github.com/crazytypewriter/dns-box/internal/config"
 	"github.com/crazytypewriter/dns-box/internal/ipset"
+	"github.com/crazytypewriter/dns-box/internal/ipsetstate"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -20,10 +21,11 @@ type Server struct {
 	log              *log.Logger
 	blockList        *blocklist.BlockList
 	listDomainCaches map[int]*cache.DomainCache
-	ipSet            *ipset.IPSet
+	ipSet            ipset.Manager
+	stateStore       *ipsetstate.Store
 }
 
-func NewServer(cfg *config.Config, dnsCache *cache.DNSCache, domainCache *cache.DomainCache, blockList *blocklist.BlockList, listDomainCaches map[int]*cache.DomainCache, ipSet *ipset.IPSet, l *log.Logger) *Server {
+func NewServer(cfg *config.Config, dnsCache *cache.DNSCache, domainCache *cache.DomainCache, blockList *blocklist.BlockList, listDomainCaches map[int]*cache.DomainCache, ipSet ipset.Manager, stateStore *ipsetstate.Store, l *log.Logger) *Server {
 	return &Server{
 		cfg:              cfg,
 		dnsCache:         dnsCache,
@@ -32,11 +34,12 @@ func NewServer(cfg *config.Config, dnsCache *cache.DNSCache, domainCache *cache.
 		blockList:        blockList,
 		listDomainCaches: listDomainCaches,
 		ipSet:            ipSet,
+		stateStore:       stateStore,
 	}
 }
 
 func (s *Server) Start(ctx context.Context, addr string) {
-	handlers := NewHandlers(s.cfg, s.dnsCache, s.domainCache, s.blockList, s.listDomainCaches, s.ipSet)
+	handlers := NewHandlers(s.cfg, s.dnsCache, s.domainCache, s.blockList, s.listDomainCaches, s.ipSet, s.stateStore)
 
 	s.httpServer = &http.Server{
 		Addr:    addr,

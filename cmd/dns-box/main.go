@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -18,17 +19,28 @@ import (
 	"github.com/crazytypewriter/dns-box/internal/config"
 	"github.com/crazytypewriter/dns-box/internal/dns"
 	"github.com/crazytypewriter/dns-box/internal/ipset"
+	"github.com/crazytypewriter/dns-box/internal/ipsetstate"
 	log "github.com/sirupsen/logrus"
 )
 
-var configPath string
+var (
+	configPath  string
+	showVersion bool
+	version     = "dev" // задаётся при сборке через -ldflags "-X main.version=..."
+)
 
 func init() {
 	flag.StringVar(&configPath, "config", "config.json", "path to config file")
+	flag.BoolVar(&showVersion, "version", false, "print version and exit")
 }
 
 func main() {
 	flag.Parse()
+
+	if showVersion {
+		fmt.Println(version)
+		os.Exit(0)
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -75,6 +87,25 @@ func run(ctx context.Context, configPath string, logOutput io.Writer) error {
 		ForceColors: true,
 	})
 
+	// Восстановление динамических списков из GitHub backup.
+	if cfg.GithubBackup.Enabled {
+		l.Info("Loading dynamic lists from GitHub backup...")
+		githubCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+		if err := cfg.MergeFromGitHub(githubCtx); err != nil {
+			l.Warnf("Failed to load GitHub backup: %v. Continuing with local config.", err)
+		} else {
+			l.Info("GitHub backup loaded and merged successfully")
+			// Синхронизируем локальный config.json с GitHub сразу после старта.
+			l.Info("Syncing local config after GitHub restore...")
+			if saveErr := cfg.SaveConfig(); saveErr != nil {
+				l.Warnf("Failed to sync local config after GitHub restore: %v", saveErr)
+			} else {
+				l.Info("Local config synced successfully")
+			}
+		}
+		cancel()
+	}
+
 	dnsCache := C.NewDNSCache(1024*1024*8, l) // 8MB
 	domainCache := cache.NewDomainCache(1024 * 1024 * 8)
 
@@ -85,9 +116,13 @@ func run(ctx context.Context, configPath string, logOutput io.Writer) error {
 		domainCache.AddSuffix(suffix)
 	}
 
-	l.Debugf("Initializing ipset...")
-	ipSet := ipset.New()
-	l.Debugf("IPSet initialized.")
+	l.Infof("Initializing ipset...")
+	ipSet, err := ipset.New()
+	if err != nil {
+		l.Errorf("Failed to initialize ipset: %v", err)
+		return err
+	}
+	l.Infof("IPSet initialized.")
 
 	// Initialize per-list domain caches
 	listDomainCaches := make(map[int]*cache.DomainCache)
@@ -111,21 +146,25 @@ func run(ctx context.Context, configPath string, logOutput io.Writer) error {
 			timeout = 7200 // default timeout
 		}
 
-		l.Debugf("Creating IPv4 set: %s", listCfg.Name)
+		if listCfg.MaxElem != 0 {
+			l.Warnf("maxelem %d for list %s is not supported by the ipset library yet, ignoring", listCfg.MaxElem, listCfg.Name)
+		}
+
+		l.Infof("Creating IPv4 set: %s", listCfg.Name)
 		if err := ipSet.CreateIPv4Set(listCfg.Name, timeout); err != nil {
 			l.Errorf("Error creating IPv4 set %s: %v", listCfg.Name, err)
 			return err
 		}
-		l.Debugf("IPv4 set %s created successfully.", listCfg.Name)
+		l.Infof("IPv4 set %s created successfully.", listCfg.Name)
 
 		if listCfg.EnableIPv6 {
 			ipv6Name := listCfg.Name + "6"
-			l.Debugf("Creating IPv6 set: %s", ipv6Name)
+			l.Infof("Creating IPv6 set: %s", ipv6Name)
 			if err := ipSet.CreateIPv6Set(ipv6Name, timeout); err != nil {
 				l.Errorf("Error creating IPv6 set %s: %v", ipv6Name, err)
 				return err
 			}
-			l.Debugf("IPv6 set %s created successfully.", ipv6Name)
+			l.Infof("IPv6 set %s created successfully.", ipv6Name)
 		}
 	}
 
@@ -136,43 +175,102 @@ func run(ctx context.Context, configPath string, logOutput io.Writer) error {
 			timeout = 7200
 		}
 
-		l.Debugf("Creating IPv4 net set: %s", netListCfg.Name)
+		l.Infof("Creating IPv4 net set: %s", netListCfg.Name)
 		if err := ipSet.CreateIPv4NetSet(netListCfg.Name, timeout); err != nil {
 			l.Errorf("Error creating IPv4 net set %s: %v", netListCfg.Name, err)
 			return err
 		}
-		l.Debugf("IPv4 net set %s created successfully.", netListCfg.Name)
+		l.Infof("IPv4 net set %s created successfully.", netListCfg.Name)
 
 		if netListCfg.EnableIPv6 {
 			ipv6Name := netListCfg.Name + "6"
-			l.Debugf("Creating IPv6 net set: %s", ipv6Name)
+			l.Infof("Creating IPv6 net set: %s", ipv6Name)
 			if err := ipSet.CreateIPv6NetSet(ipv6Name, timeout); err != nil {
 				l.Errorf("Error creating IPv6 net set %s: %v", ipv6Name, err)
 				return err
 			}
-			l.Debugf("IPv6 net set %s created successfully.", ipv6Name)
+			l.Infof("IPv6 net set %s created successfully.", ipv6Name)
+		}
+	}
+
+	// Файл состояния ipset: восстановление после ребута (фаза 3 спеки).
+	// Порядок важен: сеты уже созданы, DNS-сервер и API ещё не запущены.
+	var stateStore *ipsetstate.Store
+	if cfg.State.Enabled {
+		statePath := cfg.State.Path
+		if statePath == "" {
+			statePath = filepath.Join(filepath.Dir(configPath), "ipset-state.json")
+		}
+		stateStore = ipsetstate.NewStore(cfg.State.MaxEntriesPerSet, l)
+
+		if entries, err := ipsetstate.Load(statePath); err != nil {
+			l.Warnf("Failed to load ipset state (%v), starting with empty sets mirror", err)
+		} else {
+			validSets := make(map[string]bool)
+			for _, listCfg := range ipSetLists {
+				validSets[listCfg.Name] = true
+				if listCfg.EnableIPv6 {
+					validSets[listCfg.Name+"6"] = true
+				}
+			}
+			for _, netListCfg := range cfg.IPSet.NetLists {
+				validSets[netListCfg.Name] = true
+				if netListCfg.EnableIPv6 {
+					validSets[netListCfg.Name+"6"] = true
+				}
+			}
+
+			now := time.Now().Unix()
+			restored := make(map[string]int)
+			for _, e := range entries {
+				if !validSets[e.Set] {
+					continue // сета больше нет в конфиге
+				}
+				remaining := ipsetstate.RemainingTTL(e, now)
+				if e.Expire != 0 && remaining == 0 {
+					continue // истекла за время простоя
+				}
+				if err := ipSet.AddElement(e.Set, e.IP, remaining); err != nil {
+					l.Warnf("Failed to restore %s in set %s: %v", e.IP, e.Set, err)
+					continue
+				}
+				restored[e.Set]++
+			}
+			stateStore.Restore(entries)
+			for set, n := range restored {
+				if n > 0 {
+					l.Infof("Restored %d entries into ipset %s", n, set)
+				}
+			}
 		}
 
-		for _, cidr := range netListCfg.CIDRs {
-			_, ipNet, err := net.ParseCIDR(cidr)
-			if err != nil {
-				l.Warnf("Invalid CIDR %s in net list %s: %v", cidr, netListCfg.Name, err)
-				continue
-			}
-			if ipNet.IP.To4() != nil {
-				if addErr := ipSet.AddElement(netListCfg.Name, cidr, timeout); addErr != nil {
-					l.Errorf("Error adding CIDR %s to net set %s: %v", cidr, netListCfg.Name, addErr)
-				}
-			} else {
-				if netListCfg.EnableIPv6 {
-					ipv6Name := netListCfg.Name + "6"
-					if addErr := ipSet.AddElement(ipv6Name, cidr, timeout); addErr != nil {
-						l.Errorf("Error adding CIDR %s to net set %s: %v", cidr, ipv6Name, addErr)
+		// Периодический флаш на диск + флаш при остановке.
+		stateFlushPath := statePath
+		go func() {
+			ticker := time.NewTicker(time.Duration(cfg.State.FlushIntervalMinutes) * time.Minute)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-ticker.C:
+					if err := stateStore.FlushIfDirty(stateFlushPath); err != nil {
+						l.Warnf("Failed to flush ipset state: %v", err)
 					}
 				}
 			}
-		}
+		}()
+		defer func() {
+			if err := stateStore.FlushIfDirty(stateFlushPath); err != nil {
+				l.Errorf("Failed to flush ipset state on shutdown: %v", err)
+			}
+		}()
 	}
+
+	// Наполнение net lists: первый прогон reconciler'а сразу при старте,
+	// далее периодически по refresh_minutes.
+	reconcileNetLists(cfg, ipSet, stateStore, l)
+	go netListReconciler(ctx, cfg, ipSet, stateStore, l)
 
 	// Инициализация и запуск BlockList
 	var blockList *blocklist.BlockList
@@ -181,12 +279,13 @@ func run(ctx context.Context, configPath string, logOutput io.Writer) error {
 		go blockList.Start(ctx)
 	}
 
-	dnsHandler := dns.NewDnsHandler(cfg, dnsCache, domainCache, ipSet, blockList, listDomainCaches, l)
+	dnsHandler := dns.NewDnsHandler(cfg, dnsCache, domainCache, ipSet, blockList, listDomainCaches, stateStore, l)
+	dnsHandler.StartHostsReloader(ctx)
 	dnsServer := dns.NewServer(cfg, dnsHandler)
 	go dnsServer.Start(ctx)
 	l.Infof("DNS server started on %s", cfg.Server.Address[0])
 
-	apiServer := api.NewServer(cfg, dnsCache, domainCache, blockList, listDomainCaches, ipSet, l)
+	apiServer := api.NewServer(cfg, dnsCache, domainCache, blockList, listDomainCaches, ipSet, stateStore, l)
 	go apiServer.Start(ctx, ":8090")
 
 	<-ctx.Done()
@@ -210,4 +309,69 @@ func run(ctx context.Context, configPath string, logOutput io.Writer) error {
 	apiServer.Stop(shutdownCtx)
 
 	return ctx.Err()
+}
+
+// reconcileNetLists передобавляет все CIDR из net_lists в соответствующие
+// сеты. Повторный Add существующей записи безвреден и заодно сбрасывает
+// таймер у неперсистентных. Для persistent-списков записи добавляются с
+// timeout=0 (без срока жизни).
+func reconcileNetLists(cfg *config.Config, ipSet ipset.Manager, stateStore *ipsetstate.Store, l *log.Logger) {
+	for _, netListCfg := range cfg.GetNetLists() {
+		timeout := netListCfg.Timeout
+		if timeout == 0 {
+			timeout = 7200
+		}
+		if netListCfg.IsPersistent() {
+			timeout = 0 // вечные записи
+		}
+
+		for _, cidr := range netListCfg.CIDRs {
+			_, ipNet, err := net.ParseCIDR(cidr)
+			if err != nil {
+				l.Warnf("Invalid CIDR %s in net list %s: %v", cidr, netListCfg.Name, err)
+				continue
+			}
+			target := netListCfg.Name
+			if ipNet.IP.To4() == nil {
+				if !netListCfg.EnableIPv6 {
+					continue
+				}
+				target = netListCfg.Name + "6"
+			}
+			if addErr := ipSet.AddElement(target, cidr, timeout); addErr != nil {
+				l.Warnf("Reconcile: error adding CIDR %s to net set %s: %v", cidr, target, addErr)
+				continue
+			}
+			if stateStore != nil {
+				stateStore.Record(target, cidr, timeout)
+			}
+		}
+	}
+}
+
+// netListReconciler периодически вызывает reconcileNetLists. Для каждого
+// списка берётся свой refresh_minutes (nil → 60, явный 0/минус — выключено);
+// тикер общий — по минимальному включённому интервалу.
+func netListReconciler(ctx context.Context, cfg *config.Config, ipSet ipset.Manager, stateStore *ipsetstate.Store, l *log.Logger) {
+	minutes := 0
+	for _, netListCfg := range cfg.GetNetLists() {
+		if m := netListCfg.RefreshInterval(); m > 0 && (minutes == 0 || m < minutes) {
+			minutes = m
+		}
+	}
+	if minutes == 0 {
+		l.Info("Net list reconciler disabled (refresh_minutes = 0 for all lists)")
+		return
+	}
+
+	ticker := time.NewTicker(time.Duration(minutes) * time.Minute)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			reconcileNetLists(cfg, ipSet, stateStore, l)
+		}
+	}
 }

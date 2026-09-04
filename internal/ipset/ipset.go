@@ -9,11 +9,11 @@ import (
 
 type IPSet struct{}
 
-func New() *IPSet {
+func New() (*IPSet, error) {
 	if err := I.Init(); err != nil {
-		panic(fmt.Sprintf("ipset Init failed: %v", err))
+		return nil, fmt.Errorf("ipset Init failed: %w", err)
 	}
-	return &IPSet{}
+	return &IPSet{}, nil
 }
 
 func (i *IPSet) CreateIPv4Set(name string, timeout uint32) error {

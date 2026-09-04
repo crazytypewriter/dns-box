@@ -27,8 +27,11 @@ setRights:
 restart:
 	ssh be /etc/init.d/$(PACKAGE_NAME) restart
 
+VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
+LDFLAGS := -s -w -X main.version=$(VERSION)
+
 arm-build:
-	GOOS=linux GOARCH=arm GOMIPS=softfloat $(GO) build  -ldflags "-s -w" -o $(PACKAGE_NAME) ./cmd/dns-box/main.go
+	GOOS=linux GOARCH=arm GOMIPS=softfloat $(GO) build -ldflags "$(LDFLAGS)" -o $(PACKAGE_NAME) ./cmd/dns-box/main.go
 
 test:
 	$(GO) test ./...

@@ -20,26 +20,38 @@ func NewDNSCache(size int, l *log.Logger) *DNSCache {
 	}
 }
 
+// Get возвращает записи из кеша по ключу. Для негативных записей
+// возвращается пустой (не nil) срез.
 func (c *DNSCache) Get(key string) []dns.RR {
+	rrs, _, _ := c.GetWithMeta(key)
+	return rrs
+}
+
+// GetWithMeta помимо записей возвращает исходный (нормализованный) TTL
+// записи и остаток времени до истечения — нужно для решения о префетче.
+// Формат записи: [0:8] expire uint64 unix, [8:12] origTTL uint32, [12:] RR.
+func (c *DNSCache) GetWithMeta(key string) (rrs []dns.RR, origTTL uint32, remaining time.Duration) {
 	val := c.cache.Get(nil, []byte(key))
-	if len(val) == 0 {
-		return nil // Not in cache
+	if len(val) < 12 {
+		return nil, 0, 0 // отсутствует или запись старого/битого формата
 	}
 
-	expire := binary.BigEndian.Uint64(val[:8])
-	if time.Now().Unix() > int64(expire) {
+	expire := int64(binary.BigEndian.Uint64(val[:8]))
+	origTTL = binary.BigEndian.Uint32(val[8:12])
+	now := time.Now().Unix()
+	if now > expire {
 		c.cache.Del([]byte(key))
 		log.Tracef("Cache entry expired for key: %s", key)
-		return nil // Expired
+		return nil, 0, 0 // Expired
 	}
+	remaining = time.Duration(expire-now) * time.Second
 
-	buf := val[8:]
+	buf := val[12:]
 	if len(buf) == 0 {
 		log.Tracef("Negative cache hit for key: %s", key)
-		return []dns.RR{} // Negative cache hit
+		return []dns.RR{}, origTTL, remaining // Negative cache hit
 	}
 
-	var rrs []dns.RR
 	offset := 0
 	for offset < len(buf) {
 		if offset+2 > len(buf) {
@@ -62,13 +74,14 @@ func (c *DNSCache) Get(key string) []dns.RR {
 		offset += int(packedLen)
 	}
 
-	return rrs
+	return rrs, origTTL, remaining
 }
 
 func (c *DNSCache) Set(key string, rrs []dns.RR, ttl uint32) {
 	expire := time.Now().Add(time.Duration(ttl) * time.Second).Unix()
-	buf := make([]byte, 8)
+	buf := make([]byte, 12)
 	binary.BigEndian.PutUint64(buf, uint64(expire))
+	binary.BigEndian.PutUint32(buf[8:12], ttl)
 
 	if len(rrs) > 0 {
 		for _, rr := range rrs {

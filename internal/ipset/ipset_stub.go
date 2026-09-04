@@ -4,8 +4,8 @@ package ipset
 
 type IPSet struct{}
 
-func New() *IPSet {
-	return &IPSet{}
+func New() (*IPSet, error) {
+	return &IPSet{}, nil
 }
 
 func (i *IPSet) CreateIPv4Set(name string, timeout uint32) error {

@@ -1,0 +1,24 @@
+# Бинарные артефакты сборки
+dns-box
+dns-box-aarch64
+dns-box-local
+dns-box-test
+*.exe
+*.test
+*.out
+
+# Зависимости
+vendor/
+
+# macOS
+.DS_Store
+
+# IDE
+.idea/
+*.iml
+
+# Локальные секреты и бэкапы (не коммитим!)
+config.json.bak*
+config.json.tmp
+ipset-state.json*
+*.local.json

@@ -11,6 +11,7 @@ import (
 	"github.com/crazytypewriter/dns-box/internal/cache"
 	"github.com/crazytypewriter/dns-box/internal/config"
 	"github.com/crazytypewriter/dns-box/internal/ipset"
+	"github.com/crazytypewriter/dns-box/internal/ipsetstate"
 	"net"
 )
 
@@ -20,10 +21,11 @@ type Handlers struct {
 	domainCache      *cache.DomainCache
 	blockList        *blocklist.BlockList
 	listDomainCaches map[int]*cache.DomainCache
-	ipSet            *ipset.IPSet
+	ipSet            ipset.Manager
+	stateStore       *ipsetstate.Store
 }
 
-func NewHandlers(cfg *config.Config, dnsCache *cache.DNSCache, domainCache *cache.DomainCache, blockList *blocklist.BlockList, listDomainCaches map[int]*cache.DomainCache, ipSet *ipset.IPSet) *Handlers {
+func NewHandlers(cfg *config.Config, dnsCache *cache.DNSCache, domainCache *cache.DomainCache, blockList *blocklist.BlockList, listDomainCaches map[int]*cache.DomainCache, ipSet ipset.Manager, stateStore *ipsetstate.Store) *Handlers {
 	return &Handlers{
 		cfg:              cfg,
 		dnsCache:         dnsCache,
@@ -31,6 +33,7 @@ func NewHandlers(cfg *config.Config, dnsCache *cache.DNSCache, domainCache *cach
 		blockList:        blockList,
 		listDomainCaches: listDomainCaches,
 		ipSet:            ipSet,
+		stateStore:       stateStore,
 	}
 }
 
@@ -197,6 +200,9 @@ func (h *Handlers) addNetListCIDRs(w http.ResponseWriter, r *http.Request, listI
 	if timeout == 0 {
 		timeout = 7200
 	}
+	if listCfg.IsPersistent() {
+		timeout = 0 // вечные записи
+	}
 
 	lines := strings.Split(string(bodyBytes), "\n")
 	for _, line := range lines {
@@ -204,13 +210,26 @@ func (h *Handlers) addNetListCIDRs(w http.ResponseWriter, r *http.Request, listI
 		if cidr == "" {
 			continue
 		}
-		if _, _, parseErr := net.ParseCIDR(cidr); parseErr != nil {
+		_, ipNet, parseErr := net.ParseCIDR(cidr)
+		if parseErr != nil {
 			w.Write([]byte(fmt.Sprintf("invalid cidr %s: %v\n", cidr, parseErr)))
 			continue
 		}
-		if addErr := h.ipSet.AddElement(listCfg.Name, cidr, timeout); addErr != nil {
+		// IPv6-CIDR кладём в отдельный v6-сет, как это делает reconciler
+		target := listCfg.Name
+		if ipNet.IP.To4() == nil {
+			if !listCfg.EnableIPv6 {
+				w.Write([]byte(fmt.Sprintf("skip ipv6 cidr %s: enable_ipv6 is false\n", cidr)))
+				continue
+			}
+			target = listCfg.Name + "6"
+		}
+		if addErr := h.ipSet.AddElement(target, cidr, timeout); addErr != nil {
 			w.Write([]byte(fmt.Sprintf("error adding cidr %s to ipset: %v\n", cidr, addErr)))
 			continue
+		}
+		if h.stateStore != nil {
+			h.stateStore.Record(target, cidr, timeout)
 		}
 		h.cfg.AddCIDRToNetList(listIndex, cidr)
 	}

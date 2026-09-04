@@ -38,11 +38,17 @@ func TestBlocklistE2E(t *testing.T) {
 			UpstreamServers: []string{"8.8.8.8:53"},
 		},
 		BlockList: config.BlockListConfig{
-			URLs: []string{"https://blocklistproject.github.io/Lists/tracking.txt"},
+			Enabled: true, // без этого флага blocklist не стартует
+			URLs:    []string{"https://blocklistproject.github.io/Lists/tracking.txt"},
 		},
 	}
 	configPath := filepath.Join(tmpDir, "test_config.json")
-	configData, err := json.Marshal(cfg)
+	// Маршалим через отдельную структуру без мьютекса (copylocks)
+	configData, err := json.Marshal(struct {
+		Server    config.ServerConfig    `json:"server"`
+		DNS       config.DNSConfig       `json:"dns"`
+		BlockList config.BlockListConfig `json:"blocklist"`
+	}{cfg.Server, cfg.DNS, cfg.BlockList})
 	require.NoError(t, err)
 	err = os.WriteFile(configPath, configData, 0600)
 	require.NoError(t, err)
