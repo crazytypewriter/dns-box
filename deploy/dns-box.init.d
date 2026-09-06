@@ -9,7 +9,7 @@ USE_PROCD=1
 TMPDIR=/tmp/dns-box
 PROG=${TMPDIR}/dns-box
 CONF=/data/dns-box/config.json
-BIN_URL="https://github.com/crazytypewriter/dns-box/releases/latest/download/dns-box"
+BIN_URL="https://github.com/crazytypewriter/dns-box/releases/latest/download/dns-box-linux-arm-softfloat"
 API_URL="https://api.github.com/repos/crazytypewriter/dns-box/releases/latest"
 VER_FILE=${TMPDIR}/version.txt
 
@@ -56,22 +56,27 @@ download_binary() {
         echo "[dns-box] Binary not found, downloading v${latest_version}..."
     elif [ "$local_version" != "$latest_version" ]; then
         echo "[dns-box] Updating: ${local_version:-none} -> ${latest_version}"
-        rm -f "$PROG"
     else
         echo "[dns-box] dns-box v$local_version (up to date)"
         return 0
     fi
 
+    tmp="${PROG}.new"
+    rm -f "$tmp"
+
     if command -v curl >/dev/null 2>&1; then
-        curl -L --max-time 60 -o "$PROG" "$BIN_URL" || return 1
+        curl -fL --max-time 60 -o "$tmp" "$BIN_URL" || { rm -f "$tmp"; return 1; }
     elif command -v wget >/dev/null 2>&1; then
-        wget --no-check-certificate -O "$PROG" "$BIN_URL" || return 1
+        wget --no-check-certificate -O "$tmp" "$BIN_URL" || { rm -f "$tmp"; return 1; }
     else
         echo "[dns-box] Neither curl nor wget found!"
         return 1
     fi
 
-    chmod +x "$PROG"
+    [ -s "$tmp" ] || { echo "[dns-box] Downloaded file is empty"; rm -f "$tmp"; return 1; }
+
+    chmod +x "$tmp"
+    mv -f "$tmp" "$PROG"
     echo "$latest_version" > "$VER_FILE"
     echo "[dns-box] Installed dns-box v$latest_version"
 }

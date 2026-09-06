@@ -134,6 +134,7 @@ jobs:
           COMMIT_HASH=$(git rev-parse --short HEAD)
 
           gh release create "$NEW_TAG" \
+            ./dns-box \
             ./dns-box-linux-arm-softfloat \
             ./dns-box-linux-arm64 \
             ./dns-box-linux-amd64 \
@@ -142,6 +143,7 @@ jobs:
 
           Binaries:
           - dns-box-linux-arm-softfloat — ARMv7 softfloat (OpenWrt-роутеры)
+          - dns-box — копия arm-softfloat под старым именем, для совместимости со старыми init.d
           - dns-box-linux-arm64 — ARM64 (aarch64)
           - dns-box-linux-amd64 — x86_64"
 

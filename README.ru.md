@@ -3,6 +3,8 @@
 [![Go Version](https://img.shields.io/badge/go-1.27-blue)](https://go.dev/)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
+[English README](README.md)
+
 Высокопроизводительный DNS-сервер на Go с поддержкой маршрутизации через VPN, блокировки рекламы и автоматического резервного копирования конфигурации в GitHub.
 
 ## Оглавление
