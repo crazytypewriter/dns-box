@@ -9,7 +9,7 @@ USE_PROCD=1
 TMPDIR=/tmp/dns-box
 PROG=${TMPDIR}/dns-box
 CONF=/data/dns-box/config.json
-BIN_URL="https://github.com/crazytypewriter/dns-box/releases/latest/download/dns-box-linux-arm-softfloat"
+REL_URL="https://github.com/crazytypewriter/dns-box/releases/latest/download"
 API_URL="https://api.github.com/repos/crazytypewriter/dns-box/releases/latest"
 VER_FILE=${TMPDIR}/version.txt
 
@@ -34,8 +34,19 @@ wait_for_network() {
     echo "[dns-box] Network is ready: $ip"
 }
 
+asset_name() {
+    case "$(uname -m)" in
+        aarch64|arm64)     echo "dns-box-linux-arm64" ;;
+        x86_64|amd64)      echo "dns-box-linux-amd64" ;;
+        armv7l|armv6l|arm) echo "dns-box-linux-arm-softfloat" ;;
+        *)                 echo "dns-box-linux-arm-softfloat" ;;
+    esac
+}
+
 download_binary() {
     mkdir -p "$TMPDIR"
+
+    BIN_URL="${REL_URL}/$(asset_name)"
 
     latest_version=$(curl -s --max-time 10 "$API_URL" \
         | grep '"tag_name"' | head -n1 \
@@ -63,6 +74,7 @@ download_binary() {
 
     tmp="${PROG}.new"
     rm -f "$tmp"
+    trap 'rm -f "$tmp"' INT TERM HUP
 
     if command -v curl >/dev/null 2>&1; then
         curl -fL --max-time 60 -o "$tmp" "$BIN_URL" || { rm -f "$tmp"; return 1; }
@@ -77,6 +89,7 @@ download_binary() {
 
     chmod +x "$tmp"
     mv -f "$tmp" "$PROG"
+    trap - INT TERM HUP
     echo "$latest_version" > "$VER_FILE"
     echo "[dns-box] Installed dns-box v$latest_version"
 }
