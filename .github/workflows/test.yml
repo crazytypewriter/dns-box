@@ -133,6 +133,8 @@ jobs:
           NEW_TAG="${{ steps.tag.outputs.new_tag }}"
           COMMIT_HASH=$(git rev-parse --short HEAD)
 
+          cp dns-box-linux-arm-softfloat dns-box
+
           gh release create "$NEW_TAG" \
             ./dns-box \
             ./dns-box-linux-arm-softfloat \
