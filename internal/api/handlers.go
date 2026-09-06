@@ -421,17 +421,119 @@ func (h *Handlers) removeSuffixes(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte("ok"))
 }
 
-// handleIPSetLists returns the list of all ipset configurations.
+// handleIPSetLists управляет коллекцией ipset-списков.
+// GET    /ipset/lists          — все списки
+// POST   /ipset/lists          — создать список: {"name": "...", "enable_ipv6": bool, "timeout": uint32}
+// DELETE /ipset/lists          — удалить список: {"name": "..."}
 func (h *Handlers) handleIPSetLists(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
+	switch r.Method {
+	case http.MethodGet:
+		lists := h.cfg.GetIPSetLists()
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode(lists); err != nil {
+			http.Error(w, "failed to encode ipset lists", http.StatusInternalServerError)
+		}
+	case http.MethodPost:
+		h.createIPSetList(w, r)
+	case http.MethodDelete:
+		h.deleteIPSetList(w, r)
+	default:
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+func (h *Handlers) createIPSetList(w http.ResponseWriter, r *http.Request) {
+	var payload struct {
+		Name       string `json:"name"`
+		EnableIPv6 bool   `json:"enable_ipv6"`
+		Timeout    uint32 `json:"timeout"`
+		MaxElem    uint32 `json:"maxelem"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+	if payload.Name == "" {
+		http.Error(w, "name is required", http.StatusBadRequest)
 		return
 	}
 
+	idx := h.cfg.AddIPSetList(payload.Name, payload.EnableIPv6, payload.Timeout)
+	if idx == -1 {
+		http.Error(w, fmt.Sprintf("List '%s' already exists", payload.Name), http.StatusConflict)
+		return
+	}
+
+	// Создаём ядро-сеты сразу, чтобы список работал без рестарта
+	timeout := payload.Timeout
+	if timeout == 0 {
+		timeout = 7200
+	}
+	if err := h.ipSet.CreateIPv4Set(payload.Name, timeout, payload.MaxElem); err != nil {
+		http.Error(w, fmt.Sprintf("failed to create ipset %s: %v", payload.Name, err), http.StatusInternalServerError)
+		return
+	}
+	if payload.EnableIPv6 {
+		if err := h.ipSet.CreateIPv6Set(payload.Name+"6", timeout, payload.MaxElem); err != nil {
+			http.Error(w, fmt.Sprintf("failed to create ipset %s6: %v", payload.Name, err), http.StatusInternalServerError)
+			return
+		}
+	}
+
+	h.rebuildListCaches(idx)
+
+	if err := h.cfg.SaveConfig(); err != nil {
+		http.Error(w, "Failed to save config", http.StatusInternalServerError)
+		return
+	}
+	w.Write([]byte(fmt.Sprintf("list %s created\n", payload.Name)))
+}
+
+func (h *Handlers) deleteIPSetList(w http.ResponseWriter, r *http.Request) {
+	var payload struct {
+		Name string `json:"name"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+	if payload.Name == "" {
+		http.Error(w, "name is required", http.StatusBadRequest)
+		return
+	}
+	if !h.cfg.RemoveIPSetList(payload.Name) {
+		http.Error(w, fmt.Sprintf("List '%s' not found", payload.Name), http.StatusNotFound)
+		return
+	}
+
+	// Ядро-сеты не дестроим (нет Destroy в Manager): записи уйдут по
+	// таймауту, а конфиг и кеши чистим полностью.
+	h.rebuildListCaches(-1)
+
+	if err := h.cfg.SaveConfig(); err != nil {
+		http.Error(w, "Failed to save config", http.StatusInternalServerError)
+		return
+	}
+	w.Write([]byte(fmt.Sprintf("list %s removed\n", payload.Name)))
+}
+
+// rebuildListCaches пересобирает кеши доменов по спискам после изменения
+// коллекции: индексы сдвигаются, поэтому инкрементально обновлять нельзя.
+// listDomainCaches заполняется теми же индексами, что и GetIPSetLists.
+func (h *Handlers) rebuildListCaches(_ int) {
 	lists := h.cfg.GetIPSetLists()
-	w.Header().Set("Content-Type", "application/json")
-	if err := json.NewEncoder(w).Encode(lists); err != nil {
-		http.Error(w, "failed to encode ipset lists", http.StatusInternalServerError)
+	for k := range h.listDomainCaches {
+		delete(h.listDomainCaches, k)
+	}
+	for i, listCfg := range lists {
+		lc := cache.NewDomainCache(1024 * 1024 * 2)
+		for _, domain := range listCfg.Rules.Domains {
+			lc.Add(domain)
+		}
+		for _, suffix := range listCfg.Rules.DomainSuffix {
+			lc.AddSuffix(suffix)
+		}
+		h.listDomainCaches[i] = lc
 	}
 }
 

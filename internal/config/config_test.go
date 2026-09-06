@@ -591,3 +591,167 @@ func TestNetListsConfig(t *testing.T) {
 		t.Errorf("Expected 2 CIDRs after reload, got %d", len(reloaded[0].CIDRs))
 	}
 }
+
+// TestSaveConfigKeepsStateBlock гарантирует, что SaveConfig не затирает
+// секцию state нулями: раньше cfgCopy не включал State, и после любого
+// сохранения (например, через API) enabled/path навсегда становились
+// false/"" — до следующего рестарта, когда stateStore перестал бы создаваться.
+func TestSaveConfigKeepsStateBlock(t *testing.T) {
+	configContent := `{
+  "server": {"address": ["127.0.0.1:53"], "log": "info"},
+  "dns": {"upstream_servers": ["8.8.8.8"]},
+  "ipset": {"lists": []},
+  "state": {
+    "enabled": true,
+    "path": "/data/dns-box/ipset-state.json",
+    "flush_interval_minutes": 5,
+    "max_entries_per_set": 15000
+  },
+  "api": {"address": "127.0.0.1:8090"},
+  "github_backup": {"enabled": false}
+}`
+
+	tmpFile, err := os.CreateTemp("", "config-state-*.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(tmpFile.Name())
+	if _, err := tmpFile.WriteString(configContent); err != nil {
+		t.Fatal(err)
+	}
+	tmpFile.Close()
+
+	cfg, err := LoadConfig(tmpFile.Name())
+	if err != nil {
+		t.Fatalf("Failed to load config: %v", err)
+	}
+	if !cfg.State.Enabled || cfg.State.Path == "" {
+		t.Fatalf("State block must be loaded, got %+v", cfg.State)
+	}
+
+	// Мутация через API — как в реальном сценарии срыва
+	cfg.AddDomain("state.test")
+	if err := cfg.SaveConfig(); err != nil {
+		t.Fatalf("SaveConfig failed: %v", err)
+	}
+
+	cfg2, err := LoadConfig(tmpFile.Name())
+	if err != nil {
+		t.Fatalf("Failed to reload: %v", err)
+	}
+	if !cfg2.State.Enabled {
+		t.Errorf("state.enabled wiped by SaveConfig: %+v", cfg2.State)
+	}
+	if cfg2.State.Path != "/data/dns-box/ipset-state.json" {
+		t.Errorf("state.path wiped by SaveConfig: %+v", cfg2.State)
+	}
+	if cfg2.State.FlushIntervalMinutes != 5 || cfg2.State.MaxEntriesPerSet != 15000 {
+		t.Errorf("state tuning lost: %+v", cfg2.State)
+	}
+	if cfg2.API.Address != "127.0.0.1:8090" {
+		t.Errorf("api.address lost: %+v", cfg2.API)
+	}
+}
+
+// TestMergeIPSetLists: GitHub — источник истины для совпадающих имён,
+// но локальные списки без пары в бэкапе не исчезают.
+func TestMergeIPSetLists(t *testing.T) {
+	local := []IPSetListConfig{
+		{Name: "zapret_domains", Rules: RulesConfig{Domains: []string{"local-only.ru"}}},
+		{Name: "vpn_domains", Rules: RulesConfig{Domains: []string{"stale-version.com"}}},
+	}
+	remote := []IPSetListConfig{
+		{Name: "vpn_domains", Rules: RulesConfig{Domains: []string{"fresh-version.com"}}},
+		{Name: "new_from_backup", Rules: RulesConfig{Domains: []string{}}},
+	}
+
+	merged := mergeIPSetLists(local, remote)
+	if len(merged) != 3 {
+		t.Fatalf("Expected 3 lists after merge, got %d: %+v", len(merged), merged)
+	}
+
+	byName := map[string]IPSetListConfig{}
+	for _, l := range merged {
+		byName[l.Name] = l
+	}
+	if _, ok := byName["zapret_domains"]; !ok {
+		t.Error("Local-only list zapret_domains disappeared after merge")
+	}
+	if got := byName["vpn_domains"].Rules.Domains; len(got) != 1 || got[0] != "fresh-version.com" {
+		t.Errorf("GitHub must win on name conflict, got %v", got)
+	}
+	if _, ok := byName["new_from_backup"]; !ok {
+		t.Error("List from backup missing after merge")
+	}
+}
+
+func TestMergeUnique(t *testing.T) {
+	merged := mergeUnique([]string{"a", "b", "local"}, []string{"b", "remote", "a"})
+	expected := []string{"b", "remote", "a", "local"}
+	if len(merged) != len(expected) {
+		t.Fatalf("Expected %v, got %v", expected, merged)
+	}
+	for i := range expected {
+		if merged[i] != expected[i] {
+			t.Fatalf("Expected %v, got %v", expected, merged)
+		}
+	}
+}
+
+func TestMergeNetLists(t *testing.T) {
+	local := []NetListConfig{{Name: "local_nets", CIDRs: []string{"10.0.0.0/8"}}}
+	remote := []NetListConfig{{Name: "backup_nets", CIDRs: []string{"192.168.0.0/16"}}}
+
+	merged := mergeNetLists(local, remote)
+	if len(merged) != 2 {
+		t.Fatalf("Expected 2 net lists, got %d", len(merged))
+	}
+}
+
+func TestAddRemoveIPSetList(t *testing.T) {
+	cfg := &Config{}
+
+	idx := cfg.AddIPSetList("test_list", true, 3600)
+	if idx != 0 {
+		t.Fatalf("Expected index 0, got %d", idx)
+	}
+	if cfg.AddIPSetList("test_list", false, 0) != -1 {
+		t.Error("Duplicate name must be rejected")
+	}
+	if !cfg.RemoveIPSetList("test_list") {
+		t.Error("RemoveIPSetList must return true for existing list")
+	}
+	if cfg.RemoveIPSetList("test_list") {
+		t.Error("RemoveIPSetList must return false for missing list")
+	}
+	if len(cfg.GetIPSetLists()) != 0 {
+		t.Error("List must be removed")
+	}
+}
+
+// TestMergeFromGitHubPreservesLegacyRules: при включённых ipset_lists
+// бэкап не содержит legacy-поля domain/domain_suffix (SaveConfig пишет их
+// только в режиме без списков) — они приезжают пустыми и не должны
+// обнулять локальные rules при старте.
+func TestMergeFromGitHubPreservesLegacyRules(t *testing.T) {
+	local := []string{"legacy-one.com", "legacy-two.com"}
+	remote := []string{} // бэкап с lists — legacy-полей нет
+
+	merged := mergeUnique(local, remote)
+	if len(merged) != 2 || merged[0] != "legacy-one.com" || merged[1] != "legacy-two.com" {
+		t.Errorf("Empty backup rules must not wipe local rules, got %v", merged)
+	}
+
+	// И nil из сырого JSON — тоже
+	var nilRemote []string
+	merged = mergeUnique(local, nilRemote)
+	if len(merged) != 2 {
+		t.Errorf("nil backup rules must not wipe local rules, got %v", merged)
+	}
+
+	// При непустом бэкапе приоритет у него, без дублей
+	merged = mergeUnique(local, []string{"legacy-one.com", "backup.com"})
+	if len(merged) != 3 || merged[0] != "legacy-one.com" || merged[1] != "backup.com" {
+		t.Errorf("Expected backup-first merge without duplicates, got %v", merged)
+	}
+}

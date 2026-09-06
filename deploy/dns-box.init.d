@@ -94,7 +94,7 @@ start_service() {
     procd_close_instance
 
     ver=$("$PROG" -version 2>/dev/null | head -n1 | awk '{print $NF}')
-    echo "[dns-box] Started (v${ver:-unknown})"
+    echo "[dns-box] Started (${ver:-unknown})"
 }
 
 stop_service() {

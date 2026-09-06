@@ -638,6 +638,30 @@ curl -X DELETE http://localhost:8090/blocklist/urls \
 
 ---
 
+### Управление ipset-списками
+
+#### Создать список
+
+```bash
+curl -X POST http://localhost:8090/ipset/lists \
+  -H "Content-Type: application/json" \
+  -d '{"name": "zapret_domains", "enable_ipv6": true, "timeout": 7200, "maxelem": 65536}'
+```
+
+Создаёт и конфиг, и ядро-сеты (`zapret_domains` + `zapret_domains6`) сразу — рестарт не нужен. Дальше наполняйте правилами через `/ipset/zapret_domains/domains` и `/ipset/zapret_domains/suffixes`.
+
+#### Удалить список
+
+```bash
+curl -X DELETE http://localhost:8090/ipset/lists \
+  -H "Content-Type: application/json" \
+  -d '{"name": "zapret_domains"}'
+```
+
+Убирает список из конфига и кешей; ядро-сеты не дестроятся — записи уйдут по таймауту.
+
+> **Восстановление из GitHub — слияние, а не замещение:** при старте списки из бэкапа мержатся с локальными по имени (GitHub побеждает при конфликте имён), поэтому список, созданный на роутере и не попавший в бэкап, не исчезает. При первом же `SaveConfig` после создания он уедет в GitHub.
+
 ### Управление статическими CIDR (net_lists)
 
 #### Получить все net_lists

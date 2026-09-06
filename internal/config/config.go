@@ -403,18 +403,77 @@ func (c *Config) MergeFromGitHub(ctx context.Context) error {
 	}
 
 	if len(hostsConfig.IPSetLists) > 0 {
-		c.IPSet.Lists = hostsConfig.IPSetLists
-		c.Rules.Domains = hostsConfig.Domains
-		c.Rules.DomainSuffix = hostsConfig.DomainSuffix
-		log.Printf("[config] Restored %d ipset lists from GitHub", len(hostsConfig.IPSetLists))
+		// Слияние, а не присваивание: GitHub — источник истины для списков,
+		// которые в нём есть, но локальные списки, которых в бэкапе нет,
+		// не должны молча исчезать при старте.
+		c.IPSet.Lists = mergeIPSetLists(c.IPSet.Lists, hostsConfig.IPSetLists)
+		c.Rules.Domains = mergeUnique(c.Rules.Domains, hostsConfig.Domains)
+		c.Rules.DomainSuffix = mergeUnique(c.Rules.DomainSuffix, hostsConfig.DomainSuffix)
+		log.Printf("[config] Merged ipset lists from GitHub: %d total (backup had %d)", len(c.IPSet.Lists), len(hostsConfig.IPSetLists))
 	}
 	if len(hostsConfig.NetLists) > 0 {
-		c.IPSet.NetLists = hostsConfig.NetLists
-		log.Printf("[config] Restored %d net lists from GitHub", len(hostsConfig.NetLists))
+		c.IPSet.NetLists = mergeNetLists(c.IPSet.NetLists, hostsConfig.NetLists)
+		log.Printf("[config] Merged net lists from GitHub: %d total (backup had %d)", len(c.IPSet.NetLists), len(hostsConfig.NetLists))
 	}
 
 	normalizeSlices(c)
 	return nil
+}
+
+// mergeIPSetLists объединяет списки по имени: при совпадении имени
+// побеждает версия из GitHub, локальные списки без пары сохраняются.
+func mergeIPSetLists(local, remote []IPSetListConfig) []IPSetListConfig {
+	remoteNames := make(map[string]bool, len(remote))
+	for _, r := range remote {
+		remoteNames[r.Name] = true
+	}
+
+	merged := make([]IPSetListConfig, 0, len(remote)+len(local))
+	// Сначала remote (источник истины, порядок из бэкапа)
+	merged = append(merged, remote...)
+	// Затем локальные, которых нет в бэкапе
+	for _, l := range local {
+		if !remoteNames[l.Name] {
+			merged = append(merged, l)
+		}
+	}
+	return merged
+}
+
+// mergeNetLists — то же для статических CIDR-списков.
+func mergeNetLists(local, remote []NetListConfig) []NetListConfig {
+	remoteNames := make(map[string]bool, len(remote))
+	for _, r := range remote {
+		remoteNames[r.Name] = true
+	}
+
+	merged := make([]NetListConfig, 0, len(remote)+len(local))
+	merged = append(merged, remote...)
+	for _, l := range local {
+		if !remoteNames[l.Name] {
+			merged = append(merged, l)
+		}
+	}
+	return merged
+}
+
+// mergeUnique объединяет срезы строк без дублей; remote идёт первым.
+func mergeUnique(local, remote []string) []string {
+	seen := make(map[string]bool, len(local)+len(remote))
+	merged := make([]string, 0, len(local)+len(remote))
+	for _, s := range remote {
+		if !seen[s] {
+			seen[s] = true
+			merged = append(merged, s)
+		}
+	}
+	for _, s := range local {
+		if !seen[s] {
+			seen[s] = true
+			merged = append(merged, s)
+		}
+	}
+	return merged
 }
 
 // SaveConfig сохраняет текущую конфигурацию в файл и, при необходимости, в GitHub.
@@ -433,6 +492,7 @@ func (c *Config) SaveConfig() error {
 	staticDNS := c.DNS
 	staticGithubBackup := c.GithubBackup
 	staticAPI := c.API
+	staticState := c.State
 
 	file, err := os.Open(c.Path)
 	if err == nil {
@@ -453,6 +513,11 @@ func (c *Config) SaveConfig() error {
 			staticDNS = tempConfig.DNS
 			staticGithubBackup = tempConfig.GithubBackup
 			staticAPI = tempConfig.API
+			// Если на диске секции state нет вовсе (старый/правленный
+			// вручную конфиг), не затираем в-memory значение нулями.
+			if tempConfig.State.Enabled || tempConfig.State.Path != "" {
+				staticState = tempConfig.State
+			}
 		} else {
 			log.Printf("[config] Warning: failed to decode existing config (%v), using in-memory static values", decodeErr)
 		}
@@ -483,7 +548,7 @@ func (c *Config) SaveConfig() error {
 		GithubBackup: staticGithubBackup,
 		Rules:        cfgCopy.Rules,
 		BlockList:    cfgCopy.BlockList,
-		State:        cfgCopy.State,
+		State:        staticState,
 		API:          staticAPI,
 	}
 
@@ -841,6 +906,47 @@ func (c *Config) RemoveSuffixFromList(listIndex int, suffix string) {
 }
 
 // GetListRules returns the rules for a specific ipset list.
+// AddIPSetList создаёт новый ipset-список. Возвращает индекс нового списка
+// или -1, если имя занято.
+func (c *Config) AddIPSetList(name string, enableIPv6 bool, timeout uint32) int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	for _, l := range c.IPSet.Lists {
+		if l.Name == name {
+			return -1
+		}
+	}
+	c.IPSet.Lists = append(c.IPSet.Lists, IPSetListConfig{
+		Name:       name,
+		EnableIPv6: enableIPv6,
+		Timeout:    timeout,
+		Rules:      RulesConfig{Domains: []string{}, DomainSuffix: []string{}},
+	})
+	return len(c.IPSet.Lists) - 1
+}
+
+// RemoveIPSetList удаляет ipset-список по имени. Возвращает true, если
+// список существовал.
+func (c *Config) RemoveIPSetList(name string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	newLists := make([]IPSetListConfig, 0, len(c.IPSet.Lists))
+	found := false
+	for _, l := range c.IPSet.Lists {
+		if l.Name == name {
+			found = true
+			continue
+		}
+		newLists = append(newLists, l)
+	}
+	if found {
+		c.IPSet.Lists = newLists
+	}
+	return found
+}
+
 func (c *Config) GetListRules(listIndex int) *RulesConfig {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
