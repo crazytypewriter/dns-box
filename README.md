@@ -132,8 +132,14 @@ field).
 ### Installing on OpenWrt
 
 `deploy/dns-box.init.d` is a procd script for OpenWrt: it goes to
-`/etc/init.d/dns-box`, the binary lives in `/tmp/dns-box/dns-box`, the config —
-in `/data/dns-box/config.json` (`/tmp` is wiped on reboot, `/data` survives).
+`/etc/init.d/dns-box`, the binary runs from `/tmp/dns-box/dns-box`, the config —
+from `/data/dns-box/config.json` (`/tmp` is wiped on reboot, `/data` survives).
+A permanent copy of the binary is kept at `/data/dns-box/dns-box`: on every
+start `try_local` restores it into `/tmp` when it is missing there, so a router
+that boots without internet still comes up with a working resolver. The copy is
+refreshed after each successful update, and it is never written over a binary
+that is already in `/tmp` — otherwise every restart would overwrite the freshly
+downloaded one with the older copy.
 
 ```bash
 scp deploy/dns-box.init.d root@router:/etc/init.d/dns-box
@@ -144,10 +150,16 @@ ssh root@router /etc/init.d/dns-box start
 
 With `AUTO_UPDATE=1` the script compares the first line of `dns-box -version`
 with the `tag_name` of the latest release before starting and downloads a fresh
-binary on mismatch. With `AUTO_UPDATE=0` (default) it downloads nothing — and
-since the binary lives in `/tmp`, it will be gone after a reboot and the service
-won't start. Either deliver it yourself (`make copyToRouter`), set
-`AUTO_UPDATE=1`, or move `PROG` to `/data`.
+binary on mismatch. The download goes to a temporary file, and the new binary
+replaces the running one only after `-version` proves it actually executes; a
+failed update is not fatal, the service starts on the binary it already has.
+The release asset is chosen by `uname -m` (`asset_name`), so an aarch64 router
+gets `dns-box-linux-arm64` rather than the 32-bit softfloat build.
+
+With `AUTO_UPDATE=0` (default) nothing is fetched and the service runs whatever
+`/data/dns-box/dns-box` holds, so you have to deliver the binary yourself.
+Note that `make copyToRouter` drops it into `/tmp/dns-box/` — copy it to
+`/data/dns-box/dns-box` as well, or it will be gone after the next reboot.
 
 If `github_backup` is enabled you must set the token inside the init script
 itself: `procd_set_param env DNS_BOX_GITHUB_TOKEN=...` picks the variable from
