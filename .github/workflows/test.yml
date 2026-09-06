@@ -46,7 +46,7 @@ jobs:
         run: make arm-build
 
       - name: Upload binary artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: dns-box-arm
           path: dns-box
