@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net"
 	"os"
 	"strings"
 	"sync"
@@ -16,6 +17,9 @@ import (
 type ServerConfig struct {
 	Address []string `json:"address"`
 	Log     string   `json:"log"`
+	// AllowedSubnets — ACL: подсети, откуда разрешены DNS-запросы.
+	// Пусто = разрешено всем (небезопасно при wildcard-бинде в интернет).
+	AllowedSubnets []string `json:"allowed_subnets"`
 }
 
 type DNSConfig struct {
@@ -121,6 +125,17 @@ type APIConfig struct {
 
 const APITokenEnv = "DNS_BOX_API_TOKEN"
 
+// LocalConfig — локальная зона: имена DHCP-клиентов из lease-файлов и
+// hosts-файлов odhcpd. Позволяет убрать dnsmasq из DNS-цепочки.
+type LocalConfig struct {
+	Enabled     bool     `json:"enabled"`
+	LeasesFiles []string `json:"leases_files"` // dnsmasq: "<ts> <mac> <ip> <name> <clientid>"
+	HostsFiles  []string `json:"hosts_files"`  // hosts-формат (odhcpd)
+	// Domain — поисковый домен (например "lan"): клиент доступен и как
+	// "nas", и как "nas.lan". Пусто — только короткие имена.
+	Domain string `json:"domain"`
+}
+
 // GetToken возвращает токен API: приоритет у переменной окружения.
 func (a APIConfig) GetToken() string {
 	if token := os.Getenv(APITokenEnv); token != "" {
@@ -138,6 +153,7 @@ type Config struct {
 	GithubBackup GithubConfig    `json:"github_backup"`
 	State        StateConfig     `json:"state"`
 	API          APIConfig       `json:"api"`
+	Local        LocalConfig     `json:"local"`
 	mu           sync.RWMutex    `json:"-"`
 	Path         string          `json:"-"`
 }
@@ -196,6 +212,11 @@ func (c *Config) Validate() error {
 	}
 	if len(c.DNS.UpstreamServers) == 0 {
 		return errors.New("dns.upstream_servers is empty")
+	}
+	for i, subnet := range c.Server.AllowedSubnets {
+		if _, _, err := net.ParseCIDR(subnet); err != nil {
+			return fmt.Errorf("server.allowed_subnets[%d] is not a valid CIDR: %q", i, subnet)
+		}
 	}
 	for i, z := range c.DNS.ForwardZones {
 		if z.DomainSuffix == "" {
@@ -285,6 +306,23 @@ func normalizeSlices(c *Config) {
 	}
 	if c.API.Address == "" {
 		c.API.Address = ":8090"
+	}
+	if c.Server.AllowedSubnets == nil {
+		c.Server.AllowedSubnets = []string{}
+	}
+	if c.Local.LeasesFiles == nil {
+		if c.Local.Enabled {
+			c.Local.LeasesFiles = []string{"/tmp/dhcp.leases"}
+		} else {
+			c.Local.LeasesFiles = []string{}
+		}
+	}
+	if c.Local.HostsFiles == nil {
+		if c.Local.Enabled {
+			c.Local.HostsFiles = []string{"/tmp/hosts/odhcpd"}
+		} else {
+			c.Local.HostsFiles = []string{}
+		}
 	}
 }
 
@@ -493,6 +531,7 @@ func (c *Config) SaveConfig() error {
 	staticGithubBackup := c.GithubBackup
 	staticAPI := c.API
 	staticState := c.State
+	staticLocal := c.Local
 
 	file, err := os.Open(c.Path)
 	if err == nil {
@@ -505,6 +544,7 @@ func (c *Config) SaveConfig() error {
 			Rules        RulesConfig     `json:"rules"`
 			State        StateConfig     `json:"state"`
 			API          APIConfig       `json:"api"`
+			Local        LocalConfig     `json:"local"`
 		}
 		decodeErr := json.NewDecoder(file).Decode(&tempConfig)
 		file.Close()
@@ -513,6 +553,9 @@ func (c *Config) SaveConfig() error {
 			staticDNS = tempConfig.DNS
 			staticGithubBackup = tempConfig.GithubBackup
 			staticAPI = tempConfig.API
+			if tempConfig.Local.Enabled || len(tempConfig.Local.LeasesFiles) > 0 || len(tempConfig.Local.HostsFiles) > 0 || tempConfig.Local.Domain != "" {
+				staticLocal = tempConfig.Local
+			}
 			// Если на диске секции state нет вовсе (старый/правленный
 			// вручную конфиг), не затираем в-memory значение нулями.
 			if tempConfig.State.Enabled || tempConfig.State.Path != "" {
@@ -541,6 +584,7 @@ func (c *Config) SaveConfig() error {
 		BlockList    BlockListConfig `json:"blocklist"`
 		State        StateConfig     `json:"state"`
 		API          APIConfig       `json:"api"`
+		Local        LocalConfig     `json:"local"`
 	}{
 		Server:       staticServer,
 		DNS:          staticDNS,
@@ -550,6 +594,7 @@ func (c *Config) SaveConfig() error {
 		BlockList:    cfgCopy.BlockList,
 		State:        staticState,
 		API:          staticAPI,
+		Local:        staticLocal,
 	}
 
 	// Ротируем локальные бэкапы перед записью.

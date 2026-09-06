@@ -37,6 +37,10 @@ type Handler struct {
 	rateLimiter *RateLimiter
 	hosts       *HostsResolver
 
+	// Локальная зона (DHCP-имена, PTR) и ACL по подсетям
+	local       *LocalZone
+	allowedNets []*net.IPNet
+
 	// Зеркало ipset-записей для восстановления после ребута (nil = выключено)
 	stateStore *ipsetstate.Store
 
@@ -48,7 +52,7 @@ type Handler struct {
 	listDomainCaches map[int]*cache.DomainCache
 }
 
-func NewDnsHandler(cfg *config.Config, dnsCache *C.DNSCache, domainCache *cache.DomainCache, ipSet ipset.Manager, blockList *blocklist.BlockList, listDomainCaches map[int]*cache.DomainCache, stateStore *ipsetstate.Store, l *log.Logger) *Handler {
+func NewDnsHandler(cfg *config.Config, dnsCache *C.DNSCache, domainCache *cache.DomainCache, ipSet ipset.Manager, blockList *blocklist.BlockList, listDomainCaches map[int]*cache.DomainCache, stateStore *ipsetstate.Store, local *LocalZone, l *log.Logger) *Handler {
 	timeout := time.Duration(cfg.DNS.Timeout) * time.Second
 	if cfg.DNS.Timeout <= 0 {
 		timeout = 5 * time.Second
@@ -76,6 +80,24 @@ func NewDnsHandler(cfg *config.Config, dnsCache *C.DNSCache, domainCache *cache.
 		prefetchSem:      make(chan struct{}, 8), // не устраиваем шторм на слабом роутере
 	}
 
+	h.local = local
+	for _, subnet := range cfg.Server.AllowedSubnets {
+		_, ipNet, err := net.ParseCIDR(subnet)
+		if err != nil {
+			l.Warnf("Invalid allowed subnet %q: %v", subnet, err)
+			continue
+		}
+		h.allowedNets = append(h.allowedNets, ipNet)
+	}
+	if len(h.allowedNets) == 0 {
+		for _, addr := range cfg.Server.Address {
+			host, _, err := net.SplitHostPort(addr)
+			if err == nil && (host == "" || host == "::" || host == "0.0.0.0") {
+				l.Warnf("Wildcard bind %s with no server.allowed_subnets: DNS will answer queries from any source, including the Internet", addr)
+			}
+		}
+	}
+
 	h.rateLimiter = NewRateLimiter(cfg.DNS.RateLimit)
 	if cfg.DNS.HostsFile != "" {
 		h.hosts = NewHostsResolver(cfg.DNS.HostsFile, l)
@@ -88,6 +110,17 @@ func NewDnsHandler(cfg *config.Config, dnsCache *C.DNSCache, domainCache *cache.
 }
 
 func (h *Handler) ServeDNS(w dns.ResponseWriter, r *dns.Msg) {
+	// ACL: запросы из неразрешённых подсетей отклоняются сразу.
+	// Пустой список подсетей = разрешено всем (с оговорками, см. варнинг выше).
+	if !h.clientAllowed(w.RemoteAddr()) {
+		h.log.Debugf("DNS query refused by ACL from %s", w.RemoteAddr().String())
+		msg := new(dns.Msg)
+		msg.SetReply(r)
+		msg.Rcode = dns.RcodeRefused
+		_ = w.WriteMsg(msg)
+		return
+	}
+
 	// Rate limiting: при превышении лимита отвечаем REFUSED
 	if !h.rateLimiter.Allow(w.RemoteAddr().String()) {
 		h.log.Debugf("Rate limit exceeded for %s", w.RemoteAddr().String())
@@ -125,6 +158,52 @@ func (h *Handler) ServeDNS(w dns.ResponseWriter, r *dns.Msg) {
 			}
 			msg.Answer = append(msg.Answer, rr)
 			continue
+		}
+
+		// Локальная зона: DHCP-имена и PTR локальных адресов
+		if h.local != nil {
+			if ip := h.local.LookupForward(question.Name, question.Qtype); ip != nil {
+				h.log.Debugf("Local zone hit for %s: %s", question.Name, ip)
+				var rr dns.RR
+				if ip.To4() == nil {
+					aaaa := new(dns.AAAA)
+					aaaa.Hdr = dns.RR_Header{Name: question.Name, Rrtype: dns.TypeAAAA, Class: dns.ClassINET, Ttl: 60}
+					aaaa.AAAA = ip
+					rr = aaaa
+				} else {
+					a := new(dns.A)
+					a.Hdr = dns.RR_Header{Name: question.Name, Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 60}
+					a.A = ip
+					rr = a
+				}
+				msg.Answer = append(msg.Answer, rr)
+				continue
+			}
+			// PTR локальных диапазонов обслуживаем сами и наверх не отдаём:
+			// публичный резолвер про 192.168.x.x всё равно не знает,
+			// а LeakDNS-стиль утечки внутренних имён нам не нужен
+			if question.Qtype == dns.TypePTR {
+				if ip, ok := ParseReverse(question.Name); ok && IsLocalIP(ip) {
+					if name := h.local.LookupReverse(ip); name != "" {
+						if rr, err := ptrRR(question.Name, name); err == nil {
+							msg.Answer = append(msg.Answer, rr)
+						}
+					} else {
+						msg.Rcode = dns.RcodeNameError
+					}
+					continue
+				}
+			}
+
+			// Локальная зона авторитетна и в forward-направлении
+			// (аналог local=/lan/ в dnsmasq): незнакомое имя зоны и
+			// не-A/AAAA типы получают локальный NXDOMAIN и не утекают
+			// на апстрим вместе с внутренними именами.
+			if h.local.IsLocalName(question.Name) {
+				h.log.Debugf("Local zone authoritative NXDOMAIN for %s (type %d)", question.Name, question.Qtype)
+				msg.Rcode = dns.RcodeNameError
+				continue
+			}
 		}
 
 		domain := strings.TrimSuffix(question.Name, ".")
@@ -186,6 +265,28 @@ func (h *Handler) StartHostsReloader(ctx context.Context) {
 			}
 		}
 	}()
+}
+
+// clientAllowed проверяет адрес клиента против ACL-подсетей.
+// Пустой ACL разрешает всех.
+func (h *Handler) clientAllowed(addr net.Addr) bool {
+	if len(h.allowedNets) == 0 {
+		return true
+	}
+	host, _, err := net.SplitHostPort(addr.String())
+	if err != nil {
+		host = addr.String()
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return false
+	}
+	for _, ipNet := range h.allowedNets {
+		if ipNet.Contains(ip) {
+			return true
+		}
+	}
+	return false
 }
 
 // filterPrivateAnswers удаляет приватные IP (RFC 1918/4193, loopback,

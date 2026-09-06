@@ -433,6 +433,49 @@ refresh — also logged.
 > `github_backup.enabled: true` a token is mandatory — without one,
 > `Validate()` aborts startup and the router service won't come up.
 
+#### `local` — replacing dnsmasq DNS with dns-box
+
+To remove the double hop, switch dnsmasq to DHCP-only and put dns-box on
+port 53. dns-box then needs to answer local hostnames itself:
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `enabled` | `bool` | Serve local names and PTR records |
+| `leases_files` | `[]string` | dnsmasq lease files, default `["/tmp/dhcp.leases"]`. Format: `<expires> <mac> <ip> <name> <clientid>`; entries with name `*` are skipped |
+| `hosts_files` | `[]string` | hosts-format files (odhcpd), default `["/tmp/hosts/odhcpd"]` |
+| `domain` | `string` | Search domain (e.g. `lan`): clients resolve both as `nas` and `nas.lan` |
+
+Files are re-read by mtime every 10 seconds; if a file disappears, its
+entries are dropped instead of being frozen. A/AAAA answers get a fixed
+60 s TTL. The zone is authoritative in both directions (like dnsmasq
+`local=/lan/`): unknown names under the search domain and non-A/AAAA types
+for local names get a local NXDOMAIN and never leak to upstream resolvers.
+PTR queries for local ranges (RFC 1918/4193, RFC 6598 CGNAT incl. Tailscale
+100.64/10, loopback, link-local) are likewise always answered locally —
+from lease data, or NXDOMAIN.
+
+**ACL.** When moving to `:53`, restrict who may query:
+
+```json
+"server": {
+  "address": ["192.168.1.1:53", "fd00::1:53"],
+  "allowed_subnets": ["192.168.1.0/24", "fd00::/8", "fe80::/10"]
+}
+```
+
+Clients outside these subnets get REFUSED. An empty list allows everyone;
+binding a wildcard address (`0.0.0.0`/`::`) with an empty ACL logs a warning
+at startup. Prefer explicit interface addresses over wildcards.
+
+**Migration checklist (OpenWrt):**
+
+1. Configure `local`, `allowed_subnets` and explicit bind addresses as above.
+2. `uci set dhcp.@dnsmasq[0].port='0'; uci commit dhcp` — dnsmasq keeps DHCP,
+   stops answering DNS.
+3. Restart dns-box on port 53; verify:
+   `dig @192.168.1.1 nas.lan`, `dig @192.168.1.1 -x 192.168.1.10`,
+   and from outside your LAN the server must REFUSE.
+
 #### `api`
 
 | Parameter | Type | Description |

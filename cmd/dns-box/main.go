@@ -302,6 +302,17 @@ func run(ctx context.Context, configPath string, logOutput io.Writer) error {
 		}()
 	}
 
+	// Локальная зона: DHCP-имена из lease-файлов odhcpd/dnsmasq + PTR.
+	// Позволяет перевести dnsmasq в port=0 и убрать двойной хоп.
+	var localZone *dns.LocalZone
+	if cfg.Local.Enabled {
+		localZone = dns.NewLocalZone(cfg.Local.LeasesFiles, cfg.Local.HostsFiles, cfg.Local.Domain, l)
+		localZone.Reload() // ошибки загрузки уже не фатальны: тикер перечитает
+		localZone.StartReloader(ctx)
+		l.Infof("Local zone enabled (domain=%q, %d lease files, %d hosts files)",
+			cfg.Local.Domain, len(cfg.Local.LeasesFiles), len(cfg.Local.HostsFiles))
+	}
+
 	// Наполнение net lists: первый прогон reconciler'а сразу при старте,
 	// далее периодически по refresh_minutes.
 	reconcileNetLists(cfg, ipSet, stateStore, l)
@@ -314,7 +325,7 @@ func run(ctx context.Context, configPath string, logOutput io.Writer) error {
 		go blockList.Start(ctx)
 	}
 
-	dnsHandler := dns.NewDnsHandler(cfg, dnsCache, domainCache, ipSet, blockList, listDomainCaches, stateStore, l)
+	dnsHandler := dns.NewDnsHandler(cfg, dnsCache, domainCache, ipSet, blockList, listDomainCaches, stateStore, localZone, l)
 	dnsHandler.StartHostsReloader(ctx)
 	dnsServer := dns.NewServer(cfg, dnsHandler)
 	dnsServer.Start(ctx)
