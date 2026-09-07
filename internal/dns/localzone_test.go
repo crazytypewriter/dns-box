@@ -212,9 +212,23 @@ func TestServeDNSLocalZoneAuthoritative(t *testing.T) {
 	w := queryDNS(h, "ghost.lan.", dns.TypeA)
 	require.Equal(t, dns.RcodeNameError, w.msg.Rcode, "unknown .lan name must get local NXDOMAIN")
 
-	// Известное имя, но MX → NODATA/NXDOMAIN локально, не форвард
+	// Известное имя, но MX → NODATA локально (NOERROR + пустой answer),
+	// не форвард и не NXDOMAIN: имя-то существует
 	w = queryDNS(h, "nas.lan.", dns.TypeMX)
-	require.Equal(t, dns.RcodeNameError, w.msg.Rcode, "MX for local name must not leak upstream")
+	require.Equal(t, dns.RcodeSuccess, w.msg.Rcode, "MX for existing local name must be NODATA, not NXDOMAIN")
+	require.Empty(t, w.msg.Answer, "NODATA — ответ без записей")
+
+	// AAAA у имени, которое есть только с A: тоже NODATA. NXDOMAIN здесь
+	// у резолверов с негативным кэшем по имени убил бы и A-запрос.
+	w = queryDNS(h, "printer.lan.", dns.TypeAAAA)
+	require.Equal(t, dns.RcodeSuccess, w.msg.Rcode, "AAAA for v4-only local name must be NODATA")
+	require.Empty(t, w.msg.Answer)
+
+	// A того же имени после этого продолжает резолвиться
+	w = queryDNS(h, "printer.lan.", dns.TypeA)
+	require.Equal(t, dns.RcodeSuccess, w.msg.Rcode)
+	require.Len(t, w.msg.Answer, 1)
+	require.Equal(t, "192.168.1.11", w.msg.Answer[0].(*dns.A).A.String())
 
 	// Публичное имя по-прежнему форвардится (SERVFAIL при пустых апстримах)
 	w = queryDNS(h, "example.com.", dns.TypeMX)

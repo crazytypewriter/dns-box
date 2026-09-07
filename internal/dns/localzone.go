@@ -188,11 +188,28 @@ func (z *LocalZone) LookupForward(name string, qtype uint16) net.IP {
 	return nil
 }
 
+// HasName — имя присутствует в зоне хотя бы с одной записью (в любой
+// форме: короткой или с поисковым доменом). Отличать это от IsLocalName
+// обязательно: если имя есть, но записей запрошенного типа нет, по
+// RFC 2308 полагается NODATA (NOERROR с пустым answer), а не NXDOMAIN.
+// NXDOMAIN относится к имени целиком, и резолверы, кэширующие
+// отрицательный ответ по имени, а не по паре имя+тип (Windows DNS
+// Client, systemd-resolved), после NXDOMAIN на AAAA перестанут
+// резолвить и A.
+func (z *LocalZone) HasName(name string) bool {
+	z.mu.RLock()
+	defer z.mu.RUnlock()
+
+	_, ok := z.forward[dns.Fqdn(strings.ToLower(name))]
+	return ok
+}
+
 // IsLocalName — имя, за которое локальная зона отвечает авторитетно:
 // либо оно есть в lease/hosts-данных (в любой форме — короткой или с
 // поисковым доменом), либо попадает под поисковый домен. Для таких имён
-// любой неизвестный тип и незнакомое имя получают NXDOMAIN локально,
-// а не уходят на апстрим (аналог local=/lan/ в dnsmasq).
+// ответ формируется локально и не уходит на апстрим (аналог local=/lan/
+// в dnsmasq): несуществующее имя получает NXDOMAIN, существующее без
+// записей нужного типа — NODATA, см. HasName.
 func (z *LocalZone) IsLocalName(name string) bool {
 	z.mu.RLock()
 	defer z.mu.RUnlock()

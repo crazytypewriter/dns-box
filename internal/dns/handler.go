@@ -197,8 +197,16 @@ func (h *Handler) ServeDNS(w dns.ResponseWriter, r *dns.Msg) {
 
 			// Локальная зона авторитетна и в forward-направлении
 			// (аналог local=/lan/ в dnsmasq): незнакомое имя зоны и
-			// не-A/AAAA типы получают локальный NXDOMAIN и не утекают
+			// не-A/AAAA типы обслуживаются локально и не утекают
 			// на апстрим вместе с внутренними именами.
+			if h.local.HasName(question.Name) {
+				// Имя есть, записей запрошенного типа нет: NODATA
+				// (NOERROR с пустым answer). NXDOMAIN здесь означал бы
+				// "имени не существует" и у резолверов, кэширующих
+				// негатив по имени, убил бы заодно и A — см. HasName.
+				h.log.Debugf("Local zone NODATA for %s (type %d)", question.Name, question.Qtype)
+				continue
+			}
 			if h.local.IsLocalName(question.Name) {
 				h.log.Debugf("Local zone authoritative NXDOMAIN for %s (type %d)", question.Name, question.Qtype)
 				msg.Rcode = dns.RcodeNameError
